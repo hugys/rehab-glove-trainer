@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+data/*.db
+data/videos/
+.pytest_cache/
+.claude/
+# teammate original script - not published
+SD_Test - Copy.py
