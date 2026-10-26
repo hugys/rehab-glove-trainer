@@ -9,6 +9,7 @@ from ... import config
 from ...config import FINGERS, MOVEMENTS_BY_ID
 from ...data.database import corr_mask_from
 from ...data.video import video_path
+from ...hardware import servo_motion
 from ...hardware.servo_link import format_line
 from .. import theme
 from ..video_player import play_video
@@ -142,7 +143,8 @@ class LiveSessionPage(Page):
         self.servo_status.setText(f"Glove link: {self.ctx.servo.status()}")
         self._update_buttons()
         if self.ctx.patient_display:
-            self.ctx.patient_display.show_movement(m.id, "session", params.threshold_mm)
+            self.ctx.patient_display.show_movement(m.id, "session", params.threshold_mm,
+                                                   reference, params.speed_pct)
         self.ctx.worker.open_camera()
 
     def on_leave(self):
@@ -206,7 +208,8 @@ class LiveSessionPage(Page):
         self._update_buttons()
         if self.ctx.patient_display:
             self.ctx.patient_display.show_movement(self.reference.movement_id, "session",
-                                                   prm.threshold_mm)
+                                                   prm.threshold_mm, self.reference,
+                                                   prm.speed_pct)
         path = (video_path(self.ctx.patient_id, f"session{self.session_id}_rep{self.rep + 1}")
                 if self.ctx.record_videos() else None)
         self.ctx.worker.run_repetition(self.reference, prm, path)
@@ -262,13 +265,18 @@ class LiveSessionPage(Page):
             self._rep_err_sum += frame.overall_error_mm
             self._rep_err_n += 1
         states = frame.assist_state or {}
+        moves = frame.servo_moves or {}
+        triggered = [f for f, st in states.items()
+                     if st == "assisting" and self._prev_states.get(f) != "assisting"]
+        if triggered:
+            # Stall of t seconds detected -> hand the planned moves to the servos
+            msg = servo_motion.trigger([moves[f] for f in triggered if f in moves])
+            self._event(f"  Rep {self.rep + 1}: {', '.join(triggered)} stopped at "
+                        f"{frame.progress:.0f}% → {msg}", theme.ASSIST)
+            self._rep_assisted.update(triggered)
         for f, st in states.items():
             if st != self._prev_states.get(f):
-                if st == "assisting":
-                    self._rep_assisted.add(f)
-                    self._event(f"  Rep {self.rep + 1}: {f} stopped at {frame.progress:.0f}% "
-                                f"→ glove assisting", theme.ASSIST)
-                elif st == "done" and f in self._rep_assisted:
+                if st == "done" and f in self._rep_assisted:
                     self._event(f"  Rep {self.rep + 1}: {f} reached end position → assist stopped",
                                 theme.ACCENT)
         self._prev_states = dict(states)

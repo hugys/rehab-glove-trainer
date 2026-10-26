@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .. import config
+from ..hardware import servo_motion
 from ..config import FINGERS, LandmarkSet
 from . import tracking_core as tc
 from .interface import EngineError, FrameResult, ReferenceTrajectory, RehabEngine, SessionParams
@@ -49,6 +50,7 @@ class PipelineEngine(RehabEngine):
         self._params: SessionParams | None = None
         self._assist: tc.StallAssist | None = None
         self._target = None
+        self._reach_start = self._reach_end = None
         self._last: dict = {}
 
     # ---- to implement ----------------------------------------------------------
@@ -145,6 +147,9 @@ class PipelineEngine(RehabEngine):
                                       complete_tol=params.complete_tol_pct / 100.0,
                                       start_grace_s=params.start_grace_s)
         self._target = reference.data[-1]          # fully completed pose of the exercise
+        tips = list(self.geom.tip_rows)
+        self._reach_start = np.linalg.norm(reference.data[0][tips], axis=1)
+        self._reach_end = np.linalg.norm(self._target[tips], axis=1)
         self._last = {}
         self._on_phase_start()
 
@@ -162,6 +167,10 @@ class PipelineEngine(RehabEngine):
                 err, _ = tc.finger_errors(ref_pose, pose, self.geom)
                 cmds, states = self._assist.update(pose, self._target, m.new_t)
                 err_mm = {f: float(e * self._hand_mm) for f, e in zip(FINGERS, err)}
+                reach = np.linalg.norm(pose[list(self.geom.tip_rows)], axis=1)
+                moves = {f: servo_motion.plan_move(self._ref.movement_id, f, reach[i],
+                                                   self._reach_start[i], self._reach_end[i])
+                         for i, f in enumerate(FINGERS) if states[i] == "assisting"}
                 self._last = dict(
                     landmarks=self._display(pose), reference_landmarks=self._display(ref_pose),
                     finger_error_mm=err_mm,
@@ -169,6 +178,7 @@ class PipelineEngine(RehabEngine):
                     correction={f: e > self._params.threshold_mm for f, e in err_mm.items()},
                     assist_state=dict(zip(FINGERS, states)),
                     assist_cmd=dict(zip(FINGERS, cmds)),
+                    servo_moves=moves,
                 )
         fr = self._base_frame(m, progress_pct, new)
         for k, v in self._last.items():

@@ -163,3 +163,33 @@ def test_video_recorder_matches_wall_clock(tmp_path):
     cap = cv2.VideoCapture(str(path))
     n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     assert abs(n - 121) <= 1                  # 4 s at 30 fps regardless of camera rate
+
+
+def test_servo_motion_plan():
+    from rehab_app.hardware import servo_motion as sm
+    # close_fist: reach shrinks 1.0 -> 0.5; finger stuck halfway -> flex half the travel
+    m = sm.plan_move("close_fist", "index", 0.75, 1.0, 0.5)
+    assert m.direction == sm.CW and m.position == pytest.approx(0.5)
+    assert m.degrees == pytest.approx(0.5 * sm.SERVO_TRAVEL_DEG["index"])
+    # open_fist: reach grows -> extend; stuck at the start -> full travel
+    m = sm.plan_move("open_fist", "ring", 0.5, 0.5, 1.0)
+    assert m.direction == sm.CCW and m.degrees == pytest.approx(sm.SERVO_TRAVEL_DEG["ring"])
+    # at target -> hold
+    assert sm.plan_move("close_fist", "thumb", 0.5, 1.0, 0.5).direction == sm.HOLD
+    assert "Servo motor triggered" in sm.trigger([m])
+
+
+def test_session_frames_carry_servo_moves():
+    eng = MockEngine(LandmarkSet.from_preset("12"))
+    ref = _record(eng, takes=1)
+    eng.start_session(ref, SessionParams(100, 10, 90, 0.5, 4, 8, start_grace_s=1.0))
+    planned = set()
+    for i in range(121):
+        fr = eng.session_frame(i / 30)
+        moves = fr.servo_moves or {}
+        for f, st in (fr.assist_state or {}).items():
+            assert (st == "assisting") == (f in moves)
+        for f, m in moves.items():
+            assert m.direction == fr.assist_cmd[f] and m.degrees > 0
+            planned.add(f)
+    assert planned                            # the simulated ring finger stalls

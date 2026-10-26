@@ -48,6 +48,7 @@ class FrameResult:
     correction: dict[str, bool] | None = None      # error above the clinician threshold
     assist_state: dict[str, str] | None = None     # idle / moving / assisting / done
     assist_cmd: dict[str, int] | None = None       # +1 CW (flex) / -1 CCW (extend) / 0 hold
+    servo_moves: dict | None = None                # finger -> hardware.servo_motion.ServoMove
 
 
 @dataclass

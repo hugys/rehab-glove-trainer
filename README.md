@@ -77,6 +77,21 @@ The script's `StallAssist` is used as-is, per finger:
 | "Not moving" threshold | Settings → Glove assist tuning | 4 % of hand size |
 | "Complete" tolerance | Settings → Glove assist tuning | 8 % of hand size |
 
+**When a stall triggers:**
+- The app logs **"Servo motor triggered"** in the event list and on the console, with the
+  planned move per finger (e.g. `ring flex (CW) 64°`).
+- `rehab_app/hardware/servo_motion.py` plans the move. It is a placeholder whose numbers need
+  calibrating:
+  - The finger's current position is 0–1 along the patient's own reference.
+  - Degrees = (1 − position) × the movement's share × the finger's full servo travel.
+  - The direction comes from flex vs extend.
+  - `trigger()` is where angle/speed commands go once the firmware accepts them.
+
+**Patient visual:** in a session, the patient view shows the recorded healthy-hand
+reference (mirrored onto the affected side) in place of the generic demo. During a
+repetition it moves in step with the repetition at the chosen speed, and a finger the glove
+is driving glows purple.
+
 **Serial protocol** (from the script): one line per update, `thumb,index,middle,ring,pinky`.
 Each value is `+1` for CW (flex), `-1` for CCW (extend) or `0` for hold, at most 20 Hz. All
 fingers are set to hold whenever a repetition ends or is aborted.
@@ -113,6 +128,7 @@ rehab_app/engine/
   interface.py                  the engine contract the UI uses
 rehab_app/workers/engine_worker.py   30 fps thread; owns timing, takes, and MP4 recording
 rehab_app/hardware/servo_link.py     ESP32 serial protocol (off until the glove exists)
+rehab_app/hardware/servo_motion.py   per-finger servo direction + degrees on stall (placeholder numbers)
 rehab_app/data/                 database.py (SQLite + migrations), video.py (MP4), export.py (CSV)
 rehab_app/ui/                   windows, pages, widgets, video player, settings
 ```
