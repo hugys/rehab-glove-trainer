@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayo
 from ... import config
 from ...config import MOVEMENTS
 from ...engine.interface import SessionParams
-from ..widgets import MovementDemo
+from ..widgets import MovementDemo, with_info
 from .base import Page, button, card, heading, muted
 
 
@@ -44,7 +44,11 @@ class SessionSetupPage(Page):
         self.speed_label.setObjectName("h2")
         self.duration_label = muted("")
 
-        self.threshold = _spin(1, 50, 0.5, db.get_float("last_threshold_mm", config.THRESHOLD_DEFAULT_MM), " mm")
+        self.threshold = _spin(1, 50, 0.5, db.get_float("last_threshold_pct",
+                                                        config.THRESHOLD_DEFAULT_PCT),
+                               " % of hand size")
+        self.threshold_mm = muted("")
+        self.threshold.valueChanged.connect(self._threshold_changed)
         self.reps = QSpinBox()
         self.reps.setRange(1, 50)
         self.reps.setValue(int(db.get_float("last_reps", config.REPS_DEFAULT)))
@@ -73,17 +77,20 @@ class SessionSetupPage(Page):
         form.setVerticalSpacing(12)
         form.addRow("Movement", self.movement)
         form.addRow("", self.ref_info)
-        form.addRow("Speed", speed_row)
+        form.addRow(with_info("Speed", "speed"), speed_row)
         form.addRow("", self.duration_label)
-        form.addRow("Repetitions", self.reps)
-        form.addRow("Error threshold", self.threshold)
+        form.addRow(with_info("Repetitions", "reps"), self.reps)
+        thr_row = QHBoxLayout()
+        thr_row.addWidget(self.threshold)
+        thr_row.addWidget(self.threshold_mm, 1)
+        form.addRow(with_info("Error threshold", "threshold"), thr_row)
         form.addRow("", muted("Diagnostic: per-finger distance from the reference that is "
                               "flagged red and counted in the results."))
 
         assist_form = QFormLayout()
         assist_form.setVerticalSpacing(12)
-        assist_form.addRow("Stall time (t)", self.stall_time)
-        assist_form.addRow("Start-up grace", self.grace)
+        assist_form.addRow(with_info("Stall time (t)", "stall_time"), self.stall_time)
+        assist_form.addRow(with_info("Start-up grace", "grace"), self.grace)
         assist_form.addRow("", self.assist_info)
 
         settings = card(title="Session parameters")
@@ -132,12 +139,15 @@ class SessionSetupPage(Page):
             self.movement.setCurrentIndex(self.movement.findData(target))
         self._movement_changed()
         eps = self.ctx.db.get_float("stall_move_eps_pct", config.STALL_MOVE_EPS_PCT)
-        tol = self.ctx.db.get_float("complete_tol_pct", config.COMPLETE_TOL_PCT)
+        tol = self.ctx.db.get_float("complete_tol_move_pct", config.COMPLETE_TOL_MOVE_PCT)
         hand = self.ctx.hand_size_mm()
+        eps_mm = f" (≈{eps * hand / 100:.1f} mm)" if hand else ""
         self.assist_info.setText(
-            f"“Stopped” = fingertip moves less than {eps:g}% of hand size (≈{eps * hand / 100:.1f} mm, "
-            f"lowered automatically at slow speeds) within t while behind the reference. “Complete” = within {tol:g}% (≈{tol * hand / 100:.1f} mm) of the end "
-            f"position. Glove output: {self.ctx.servo.status()}. (Adjust in Settings.)")
+            f"“Stopped” = fingertip moves less than {eps:g}% of hand size{eps_mm} within t "
+            f"(lowered automatically at slow speeds) while behind the reference. "
+            f"“Complete” = within {tol:g}% of that finger's own movement from the end position. "
+            f"Glove output: {self.ctx.servo.status()}. (Adjust in Settings.)")
+        self._threshold_changed()
 
     def _movement_changed(self):
         mid = self.movement.currentData()
@@ -149,6 +159,12 @@ class SessionSetupPage(Page):
                                   f" ({row['n_takes']} take{'s' if row['n_takes'] != 1 else ''})")
         else:
             self.ref_info.setText("Record a reference for this movement first.")
+
+    def _threshold_changed(self):
+        hand = self.ctx.hand_size_mm()
+        v = self.threshold.value()
+        self.threshold_mm.setText(f"≈ {v * hand / 100:.1f} mm on this patient's hand" if hand
+                                  else "(≈ 9 mm per 10 % on an average 90 mm hand)")
 
     def _speed_changed(self):
         v = self.speed.value()
@@ -164,12 +180,13 @@ class SessionSetupPage(Page):
             return
         db = self.ctx.db
         params = SessionParams(
-            speed_pct=float(self.speed.value()), threshold_mm=self.threshold.value(),
+            speed_pct=float(self.speed.value()), threshold_pct=self.threshold.value(),
             hand_size_mm=self.ctx.hand_size_mm(), stall_window_s=self.stall_time.value(),
             stall_move_eps_pct=db.get_float("stall_move_eps_pct", config.STALL_MOVE_EPS_PCT),
-            complete_tol_pct=db.get_float("complete_tol_pct", config.COMPLETE_TOL_PCT),
+            complete_tol_move_pct=db.get_float("complete_tol_move_pct",
+                                               config.COMPLETE_TOL_MOVE_PCT),
             start_grace_s=self.grace.value())
-        for k, v in (("last_speed_pct", params.speed_pct), ("last_threshold_mm", params.threshold_mm),
+        for k, v in (("last_speed_pct", params.speed_pct), ("last_threshold_pct", params.threshold_pct),
                      ("last_reps", self.reps.value()), ("last_stall_s", params.stall_window_s),
                      ("last_grace_s", params.start_grace_s)):
             db.set_setting(k, str(v))

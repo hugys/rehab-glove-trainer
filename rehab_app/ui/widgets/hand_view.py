@@ -67,7 +67,7 @@ class HandComparisonView(QWidget):
         p.setPen(QColor(theme.MUTED))
         p.setFont(QFont(self.font().family(), 11))
         p.drawText(QRectF(10, 4, self.width() - 20, 20), Qt.AlignLeft,
-                   "Front view (mm)    orange dashed = reference    blue = patient")
+                   "Front view    orange dashed = reference    blue = patient")
         self._update_scale(r)
         if self._ref is not None:
             self._draw(p, self._ref, r, theme.qcolor("#e8743b", 200), 2.5, True)

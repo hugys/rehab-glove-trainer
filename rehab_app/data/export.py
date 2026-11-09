@@ -5,7 +5,7 @@ import csv
 from pathlib import Path
 
 from ..config import FINGERS, MOVEMENTS_BY_ID, LANDMARK_PRESETS
-from .database import ERR_COLS, FRAME_INSERT_COLS, Database
+from .database import ERR_COLS, FRAME_INSERT_COLS, Database, session_threshold
 
 FRAME_COLS = FRAME_INSERT_COLS
 
@@ -16,7 +16,8 @@ def _name(movement_id: str) -> str:
 
 
 def export_session(db: Database, session_id: int, path: Path | str) -> Path:
-    """err_* = diagnostic distance to the reference (mm); state_*/cmd_* = stall assist
+    """err_* = diagnostic distance to the reference, in `err_units` (pct = % of hand
+    size; mm for sessions recorded before that change); state_*/cmd_* = stall assist
     (cmd: +1 flex, -1 extend, 0 hold) - what the glove motors were told."""
     path = Path(path)
     s = db.get_session(session_id)
@@ -26,10 +27,12 @@ def export_session(db: Database, session_id: int, path: Path | str) -> Path:
         w.writerow(["# patient", p["name"], p["patient_code"] or "", p["affected_hand"],
                     "hand_size_mm", s["hand_size_mm"]])
         w.writerow(["# session_id", session_id, "movement", _name(s["movement_id"]),
-                    "speed_pct", s["speed_pct"], "threshold_mm", s["threshold_mm"],
+                    "speed_pct", s["speed_pct"], "err_units", s["err_units"],
+                    "threshold", session_threshold(s),
                     "stall_time_s", s["stall_window_s"], "start_grace_s", s["start_grace_s"],
                     "stall_move_eps_pct", s["stall_move_eps_pct"],
-                    "complete_tol_pct", s["complete_tol_pct"],
+                    "complete_tol_pct_of_hand", s["complete_tol_pct"],
+                    "complete_tol_pct_of_movement", s["complete_tol_move_pct"],
                     "landmarks", s["landmark_preset"], "started", s["started_at"]])
         w.writerow(FRAME_COLS)
         for row in db.session_frames(session_id):
@@ -66,13 +69,13 @@ def export_patient(db: Database, patient_id: int, folder: Path | str) -> list[Pa
     summary_path = folder / f"patient_{patient_id}_summary.csv"
     with summary_path.open("w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["session_id", "started_at", "movement", "speed_pct", "threshold_mm",
+        w.writerow(["session_id", "started_at", "movement", "speed_pct", "err_units", "threshold",
                     "stall_time_s", "landmarks", *[f"mean_{c}" for c in ERR_COLS],
                     "mean_err_overall", *[f"pct_assist_{f}" for f in FINGERS]])
         for s in db.list_sessions(patient_id):
             summ = db.session_summary(s["id"])
             w.writerow([s["id"], s["started_at"], s["movement_id"], s["speed_pct"],
-                        s["threshold_mm"], s["stall_window_s"], s["landmark_preset"],
+                        s["err_units"], session_threshold(s), s["stall_window_s"], s["landmark_preset"],
                         *[summ["mean"][f] for f in FINGERS], summ["overall"],
                         *[round(summ["pct_assist"][f], 1) for f in FINGERS]])
             out.append(export_session(db, s["id"], folder / f"session_{s['id']}.csv"))

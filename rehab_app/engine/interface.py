@@ -8,9 +8,10 @@ Conventions
 -----------
 * Landmark arrays are (N, 3) with N = landmark_set.count (12 or 15), rows in
   `config.LANDMARK_PRESETS[preset]` order.
-* Everything returned in a FrameResult is in **millimetres in a y-up display
-  frame** (wrist at origin, fingers point +y). The engine converts from its
-  internal hand-size units using the patient's hand size.
+* Landmarks in a FrameResult are in **millimetres in a y-up display frame**
+  (wrist at origin, fingers point +y), for drawing. Errors are in **% of hand
+  size** (wrist -> middle-finger knuckle, measured from the camera), so they need
+  no hand-size input; the UI adds mm when the patient's hand size was entered.
 * ReferenceTrajectory.data is stored in the engine's native units
   (`units`: "hand" = multiples of wrist->middle-MCP distance).
 * Progress is 0-100 %. The UI worker owns the clock: it passes `elapsed_s`
@@ -43,8 +44,8 @@ class FrameResult:
     landmarks: np.ndarray | None = None      # (N, 3) mm, display frame (current hand)
     landmarks_px: np.ndarray | None = None   # (N, 2) normalised 0-1 image coords (overlay)
     reference_landmarks: np.ndarray | None = None  # (N, 3) expected pose at this progress
-    finger_error_mm: dict[str, float] | None = None
-    overall_error_mm: float | None = None
+    finger_error_pct: dict[str, float] | None = None   # % of hand size
+    overall_error_pct: float | None = None
     correction: dict[str, bool] | None = None      # error above the clinician threshold
     assist_state: dict[str, str] | None = None     # idle / moving / assisting / done
     assist_cmd: dict[str, int] | None = None       # +1 CW (flex) / -1 CCW (extend) / 0 hold
@@ -71,11 +72,11 @@ class ReferenceTrajectory:
 @dataclass
 class SessionParams:
     speed_pct: float
-    threshold_mm: float
-    hand_size_mm: float
+    threshold_pct: float                     # error threshold, % of hand size
+    hand_size_mm: float | None               # None = not measured (mm only for display)
     stall_window_s: float                    # clinician-set time t before assist engages
-    stall_move_eps_pct: float                # % of hand size
-    complete_tol_pct: float                  # % of hand size
+    stall_move_eps_pct: float                # % of hand size (upper limit)
+    complete_tol_move_pct: float             # % of each finger's own movement
     start_grace_s: float = 0.0               # no stall judged in the first seconds of a rep
 
 

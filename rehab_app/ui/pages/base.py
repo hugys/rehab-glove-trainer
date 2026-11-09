@@ -37,13 +37,18 @@ class Page(QWidget):
     def on_error(self, msg: str): ...
 
 
-def card(*widgets, title: str | None = None, spacing: int = 10) -> QFrame:
+def card(*widgets, title: str | None = None, spacing: int = 10,
+         info: str | None = None) -> QFrame:
+    """info: key into info_text.INFO - adds the "i" icon next to the title."""
     f = QFrame()
     f.setObjectName("card")
     lay = QVBoxLayout(f)
     lay.setContentsMargins(16, 14, 16, 14)
     lay.setSpacing(spacing)
-    if title:
+    if title and info:
+        from ..widgets import with_info
+        lay.addWidget(with_info(heading(title, 2), info))
+    elif title:
         lay.addWidget(heading(title, 2))
     for w in widgets:
         lay.addWidget(w)

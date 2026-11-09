@@ -9,7 +9,10 @@ from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QHeaderView,
 
 from ...config import FINGERS, MOVEMENTS_BY_ID
 from ...data import export
+from ...data.database import session_threshold
 from .. import theme
+from ..units import fmt_err, unit_label
+from ..widgets import header_info
 from ..video_player import play_video
 from .base import Page, button, card, heading, muted
 
@@ -26,19 +29,22 @@ class ResultsPage(Page):
         pg.setConfigOptions(antialias=True, background="w", foreground=theme.TEXT)
         self.curve_plot = pg.PlotWidget()
         self.curve_plot.setLabel("bottom", "Movement progress", units="%")
-        self.curve_plot.setLabel("left", "Error", units="mm")
+        self.curve_plot.setLabel("left", "Error (% of hand size)")
         self.curve_plot.addLegend(offset=(-10, 10))
         self.curve_plot.showGrid(y=True, alpha=0.2)
 
         self.trend_plot = pg.PlotWidget()
         self.trend_plot.setLabel("bottom", "Session # (this movement)")
-        self.trend_plot.setLabel("left", "Mean error", units="mm")
+        self.trend_plot.setLabel("left", "Mean error (% of hand size)")
         self.trend_plot.addLegend(offset=(-10, 10))
         self.trend_plot.showGrid(y=True, alpha=0.2)
 
         self.table = QTableWidget(len(FINGERS), 4)
         self.table.setHorizontalHeaderLabels(["Finger", "Mean error", "Time above threshold",
                                               "Time glove assisting"])
+        header_info(self.table, 1, "Mean error", "error")
+        header_info(self.table, 2, "Time above threshold", "time_above")
+        header_info(self.table, 3, "Time glove assisting", "time_assist")
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().hide()
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -58,8 +64,10 @@ class ResultsPage(Page):
 
         plots = QHBoxLayout()
         plots.addWidget(card(self.curve_plot, muted("Mean across repetitions. Dashed line = threshold."),
-                             title="Error through the movement"), 1)
-        plots.addWidget(card(self.trend_plot, title="Progress across sessions"), 1)
+                             title="Error through the movement", info="error"), 1)
+        plots.addWidget(card(self.trend_plot, muted("Mean error per session of this movement "
+                                                    "(lower = closer to the reference)."),
+                             title="Progress across sessions", info="mean_error"), 1)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 20, 24, 20)
@@ -103,7 +111,10 @@ class ResultsPage(Page):
             return
         s = self.ctx.db.get_session(sid)
         frames = self.ctx.db.session_frames(sid)
-        thr = s["threshold_mm"]
+        thr = session_threshold(s)
+        units, hand = s["err_units"], s["hand_size_mm"]
+        self.curve_plot.setLabel("left", f"Error ({unit_label(units)})")
+        self.trend_plot.setLabel("left", f"Mean error ({unit_label(units)})")
 
         # --- error vs progress, averaged across reps on a 0-100 grid
         grid = np.linspace(0, 100, 101)
@@ -122,8 +133,10 @@ class ResultsPage(Page):
         self.curve_plot.addLine(y=thr, pen=pg.mkPen(theme.TEXT, width=1, style=Qt.DashLine))
 
         # --- trend across sessions of the same movement
+        # (only sessions in the same units: older sessions were recorded in mm)
         same = [x for x in reversed(self.ctx.db.list_sessions(self.ctx.patient_id))
-                if x["movement_id"] == s["movement_id"] and x["reps_done"]]
+                if x["movement_id"] == s["movement_id"] and x["reps_done"]
+                and x["err_units"] == units]
         summaries = [self.ctx.db.session_summary(x["id"]) for x in same]
         xs = np.arange(1, len(same) + 1)
         for f in FINGERS:
@@ -142,13 +155,14 @@ class ResultsPage(Page):
         summ = self.ctx.db.session_summary(sid)
         for i, f in enumerate(FINGERS):
             m = summ["mean"][f]
-            vals = [f.capitalize(), f"{m:.1f} mm" if m is not None else "--",
+            vals = [f.capitalize(), fmt_err(m, hand, units),
                     f"{summ['pct_over'][f]:.0f}%", f"{summ['pct_assist'][f]:.0f}%"]
             for j, v in enumerate(vals):
                 self.table.setItem(i, j, QTableWidgetItem(v))
-        overall = f"{summ['overall']:.1f} mm" if summ["overall"] is not None else "--"
+        overall = fmt_err(summ["overall"], hand, units)
         self.summary.setText(
-            f"Speed {s['speed_pct']:.0f}% · threshold {thr:.1f} mm · landmarks {s['landmark_preset']}"
+            f"Speed {s['speed_pct']:.0f}% · threshold {fmt_err(thr, hand, units)} · "
+            f"landmarks {s['landmark_preset']}"
             + (f" · stall time {s['stall_window_s']:.1f} s" if s["stall_window_s"] else "")
             + f" · {summ['n_frames']} tracked frames · overall mean error {overall}"
             + (f" · notes: {s['notes']}" if s["notes"] else ""))

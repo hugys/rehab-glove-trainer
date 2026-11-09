@@ -6,7 +6,10 @@ from PySide6.QtWidgets import (QAbstractItemView, QFrame, QGridLayout, QHBoxLayo
                                QLabel, QTableWidget, QTableWidgetItem, QVBoxLayout)
 
 from ...config import MOVEMENTS, MOVEMENTS_BY_ID
+from ...data.database import session_threshold
 from .. import theme
+from ..units import fmt_err
+from ..widgets import header_info
 from .base import Page, button, heading, muted
 
 
@@ -65,6 +68,9 @@ class PatientHomePage(Page):
         self.sessions = QTableWidget(0, 6)
         self.sessions.setHorizontalHeaderLabels(
             ["Date", "Movement", "Speed", "Threshold", "Reps", "Mean error"])
+        header_info(self.sessions, 2, "Speed", "speed")
+        header_info(self.sessions, 3, "Threshold", "threshold")
+        header_info(self.sessions, 5, "Mean error", "mean_error")
         self.sessions.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.sessions.verticalHeader().hide()
         self.sessions.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -99,9 +105,11 @@ class PatientHomePage(Page):
             return
         self.header.setText(p["name"])
         code = f"ID {p['patient_code']} · " if p["patient_code"] else ""
+        hand = self.ctx.hand_size_mm()
+        size = f"{hand:.0f} mm" if hand else "not measured (results in % of hand size)"
         self.sub.setText(f"{code}Affected hand: {p['affected_hand']} · "
                          f"Reference hand: {self.ctx.healthy_hand()} · "
-                         f"Hand size: {self.ctx.hand_size_mm():.0f} mm · "
+                         f"Hand size: {size} · "
                          f"Landmark set: {self.ctx.landmark_set.count} points")
         if self.ctx.patient_display:
             self.ctx.patient_display.show_idle(p["name"])
@@ -112,9 +120,10 @@ class PatientHomePage(Page):
         self.sessions.setRowCount(len(rows))
         for i, s in enumerate(rows):
             vals = [s["started_at"][:16].replace("T", " "), MOVEMENTS_BY_ID[s["movement_id"]].name,
-                    f"{s['speed_pct']:.0f}%", f"{s['threshold_mm']:.1f} mm",
+                    f"{s['speed_pct']:.0f}%",
+                    fmt_err(session_threshold(s), s["hand_size_mm"], s["err_units"]),
                     f"{s['reps_done']}/{s['reps']}",
-                    f"{s['mean_err']:.1f} mm" if s["mean_err"] is not None else "--"]
+                    fmt_err(s["mean_err"], s["hand_size_mm"], s["err_units"])]
             for j, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 item.setData(Qt.UserRole, s["id"])

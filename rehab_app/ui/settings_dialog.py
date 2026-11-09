@@ -11,6 +11,7 @@ from .. import config
 from ..config import LANDMARK_PRESETS
 from ..hardware.servo_link import NullServoLink, SerialServoLink, list_serial_ports
 from .context import AppContext
+from .widgets import with_info
 
 
 def _group(title: str, form: QFormLayout) -> QGroupBox:
@@ -39,7 +40,7 @@ class SettingsDialog(QDialog):
             db.get_setting("landmark_preset", ctx.landmark_set.preset)))
         f1 = QFormLayout()
         f1.addRow("Engine", self.engine)
-        f1.addRow("Landmark set", self.preset)
+        f1.addRow(with_info("Landmark set", "landmarks"), self.preset)
         f1.addRow("", QLabel(f"Running now: {ctx.engine_kind}, {ctx.landmark_set.count} points. "
                              "These two apply after restarting the app."))
 
@@ -76,17 +77,14 @@ class SettingsDialog(QDialog):
         self.eps.setSuffix(" % of hand size")
         self.eps.setValue(db.get_float("stall_move_eps_pct", config.STALL_MOVE_EPS_PCT))
         self.tol = QDoubleSpinBox()
-        self.tol.setRange(1, 40)
-        self.tol.setSingleStep(0.5)
-        self.tol.setSuffix(" % of hand size")
-        self.tol.setValue(db.get_float("complete_tol_pct", config.COMPLETE_TOL_PCT))
+        self.tol.setRange(2, 50)
+        self.tol.setSingleStep(1)
+        self.tol.setSuffix(" % of the finger's movement")
+        self.tol.setValue(db.get_float("complete_tol_move_pct", config.COMPLETE_TOL_MOVE_PCT))
         f3 = QFormLayout()
-        f3.addRow("“Not moving” below", self.eps)
-        f3.addRow("", QLabel("Upper limit: fingertip movement within the stall time below this "
-                             "counts as stopped.\nAt slow speeds it is lowered automatically to half "
-                             "of what the reference moves in that time,\nand a finger only counts as "
-                             "stalled if it is also behind the reference."))
-        f3.addRow("“Complete” within", self.tol)
+        f3.addRow(with_info("“Not moving” below", "not_moving"), self.eps)
+        f3.addRow("", QLabel("Upper limit - lowered automatically at slow speeds."))
+        f3.addRow(with_info("“Complete” within", "complete"), self.tol)
         f3.addRow("", QLabel("The stall time t itself is set per session on the setup screen."))
 
         # --- glove
@@ -149,7 +147,7 @@ class SettingsDialog(QDialog):
             "camera_source": src, "camera_file": self.video_file.text().strip(),
             "mirror_preview": "1" if self.mirror.isChecked() else "0",
             "record_videos": "1" if self.record.isChecked() else "0",
-            "stall_move_eps_pct": f"{self.eps.value():g}", "complete_tol_pct": f"{self.tol.value():g}",
+            "stall_move_eps_pct": f"{self.eps.value():g}", "complete_tol_move_pct": f"{self.tol.value():g}",
             "servo_enabled": "1" if self.servo_on.isChecked() else "0",
             "servo_port": self.port.currentText(), "servo_baud": self.baud.currentText(),
             "patient_display": "1" if self.patient_display.isChecked() else "0",

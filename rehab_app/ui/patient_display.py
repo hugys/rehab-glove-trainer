@@ -5,9 +5,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from ..config import APP_NAME, MOVEMENTS_BY_ID
+from .. import config
+from ..config import APP_NAME, MOVEMENTS_BY_ID, session_duration_s
 from . import theme
-from ..config import session_duration_s
 from .widgets import (CameraView, FingerErrorPanel, MovementDemo, MovementProgressBar,
                       ReferenceHandView)
 
@@ -114,7 +114,7 @@ class PatientDisplay(QWidget):
         self.progress.reset()
         self.progress.set_color(theme.ACCENT)
         if mode == "session":
-            self.fingers.set_threshold(threshold or 10)
+            self.fingers.set_threshold(threshold or config.THRESHOLD_DEFAULT_PCT)
             self.fingers.clear()
             self.fingers.show()
         else:
@@ -141,8 +141,8 @@ class PatientDisplay(QWidget):
                 self.status.setText("The glove is helping - relax and let it guide you")
             else:
                 self.status.setText("Keep going…")
-            if phase == "session" and frame.finger_error_mm:
-                self.fingers.set_values(frame.finger_error_mm, states)
+            if phase == "session" and frame.finger_error_pct:
+                self.fingers.set_values(frame.finger_error_pct, states)
 
     def set_status(self, text: str, color: str | None = None):
         self.ref_hand.set_progress(None)          # rep over -> back to looping preview

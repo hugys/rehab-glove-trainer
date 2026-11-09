@@ -87,7 +87,7 @@ def test_mock_pipeline_and_assist(preset):
         fr = eng.session_frame(i / 30)
         seen |= set((fr.assist_state or {}).values())
     assert "assisting" in seen                # the simulated ring finger stalls
-    assert set(fr.finger_error_mm) == set(FINGERS)
+    assert set(fr.finger_error_pct) == set(FINGERS)
 
 
 def test_session_rejects_other_landmark_set():
@@ -230,3 +230,52 @@ def test_reference_follows_clinician_speed(speed):
     assert fr.progress == pytest.approx(100 * expected)
     assert np.allclose(fr.reference_landmarks,
                        eng._display(tc.interp_rows(ref.data, expected)), atol=1e-6)
+
+
+def _reach(ref, geom):
+    return np.linalg.norm(ref.data[:, list(geom.tip_rows), :], axis=-1)
+
+
+def test_completion_is_per_finger_and_direction_aware():
+    ls = LandmarkSet.from_preset("12")
+    geom = tc.Geometry.from_landmark_set(ls)
+    ref = _record(MockEngine(ls), "precision_grip")
+    reach = _reach(ref, geom)
+    span = reach[-1] - reach[0]
+    sa = tc.StallAssist(geom, ref_reach=reach, duration_s=4.0, complete_tol_move=0.10)
+    pinky = FINGERS.index("pinky")
+    # A flat 8 % of hand size was about half the pinky's movement in a precision grip
+    assert 0.08 / abs(span[pinky]) > 0.4
+    assert sa.tol[pinky] == pytest.approx(max(tc.COMPLETE_TOL_FLOOR, 0.10 * abs(span[pinky])))
+    # Halfway is not done; past the end in the movement's direction is done (never pushed back)
+    assert not sa._complete(pinky, 0.5 * span[pinky])
+    assert sa._complete(pinky, -0.5 * span[pinky])
+    # A finger the reference doesn't move keeps the absolute tolerance both ways
+    still = tc.StallAssist(geom, ref_reach=np.zeros((101, 5)) + 1.0, duration_s=4.0,
+                           complete_tol_move=0.10, complete_tol=0.08)
+    assert still._complete(0, 0.05) and still._complete(0, -0.05) and not still._complete(0, 0.2)
+
+
+def test_hand_size_optional_and_legacy_mm_sessions(tmp_path):
+    from rehab_app.data.database import session_threshold
+    db = Database(tmp_path / "t.db")
+    pid = db.add_patient("No Ruler", "right")
+    assert db.get_patient(pid)["hand_size_known"] == 0
+    db.update_patient(pid, hand_size_mm=80)
+    assert db.get_patient(pid)["hand_size_known"] == 1
+    db.update_patient(pid, hand_size_mm=None)
+    assert db.get_patient(pid)["hand_size_known"] == 0
+    sid = db.create_session(pid, "open_fist", None, "12", 100, 12.0, 1)
+    s = db.get_session(sid)
+    assert s["err_units"] == "pct" and session_threshold(s) == 12.0 and s["threshold_mm"] == 0
+    # a session from before the change: mm units, threshold in threshold_mm
+    db.conn.execute("UPDATE sessions SET err_units = 'mm', threshold_mm = 10 WHERE id = ?", (sid,))
+    assert session_threshold(db.get_session(sid)) == 10
+
+
+def test_fmt_err():
+    from rehab_app.ui.units import fmt_err
+    assert fmt_err(10.0) == "10.0 %"
+    assert fmt_err(10.0, 90) == "10.0 % (9.0 mm)"
+    assert fmt_err(7.5, 90, "mm") == "7.5 mm"
+    assert fmt_err(None) == fmt_err(float("nan")) == "--"

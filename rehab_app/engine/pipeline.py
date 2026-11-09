@@ -87,7 +87,7 @@ class PipelineEngine(RehabEngine):
         self._movement_id = movement_id
         self._duration = duration_s
         self._source_hand = source_hand
-        self._hand_mm = hand_size_mm
+        self._hand_mm = hand_size_mm or config.HAND_SIZE_DEFAULT_MM   # drawing only
         self._takes = []
 
     def start_take(self, take_index: int):
@@ -140,15 +140,15 @@ class PipelineEngine(RehabEngine):
             raise EngineError("Reference units not supported - re-record it.")
         self._ref = reference
         self._params = params
-        self._hand_mm = params.hand_size_mm
+        self._hand_mm = params.hand_size_mm or config.HAND_SIZE_DEFAULT_MM  # drawing only
         self._duration = config.session_duration_s(params.speed_pct)
         tips = list(self.geom.tip_rows)
         ref_reach = np.linalg.norm(reference.data[:, tips, :], axis=-1)   # (P, 5)
         self._assist = tc.StallAssist(self.geom, window_s=params.stall_window_s,
                                       move_eps=params.stall_move_eps_pct / 100.0,
-                                      complete_tol=params.complete_tol_pct / 100.0,
                                       start_grace_s=params.start_grace_s,
-                                      ref_reach=ref_reach, duration_s=self._duration)
+                                      ref_reach=ref_reach, duration_s=self._duration,
+                                      complete_tol_move=params.complete_tol_move_pct / 100.0)
         self._target = reference.data[-1]          # fully completed pose of the exercise
         self._reach_start, self._reach_end = ref_reach[0], ref_reach[-1]
         self._last = {}
@@ -167,16 +167,16 @@ class PipelineEngine(RehabEngine):
                 ref_pose = tc.interp_rows(self._ref.data, p)
                 err, _ = tc.finger_errors(ref_pose, pose, self.geom)
                 cmds, states = self._assist.update(pose, self._target, m.new_t, p)
-                err_mm = {f: float(e * self._hand_mm) for f, e in zip(FINGERS, err)}
+                err_pct = {f: float(e * 100.0) for f, e in zip(FINGERS, err)}
                 reach = np.linalg.norm(pose[list(self.geom.tip_rows)], axis=1)
                 moves = {f: servo_motion.plan_move(self._ref.movement_id, f, reach[i],
                                                    self._reach_start[i], self._reach_end[i])
                          for i, f in enumerate(FINGERS) if states[i] == "assisting"}
                 self._last = dict(
                     landmarks=self._display(pose), reference_landmarks=self._display(ref_pose),
-                    finger_error_mm=err_mm,
-                    overall_error_mm=float(np.mean(list(err_mm.values()))),
-                    correction={f: e > self._params.threshold_mm for f, e in err_mm.items()},
+                    finger_error_pct=err_pct,
+                    overall_error_pct=float(np.mean(list(err_pct.values()))),
+                    correction={f: e > self._params.threshold_pct for f, e in err_pct.items()},
                     assist_state=dict(zip(FINGERS, states)),
                     assist_cmd=dict(zip(FINGERS, cmds)),
                     servo_moves=moves,
