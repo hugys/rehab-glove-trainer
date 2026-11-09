@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayo
 from ... import config
 from ...config import MOVEMENTS
 from ...engine.interface import SessionParams
-from ..widgets import MovementDemo, with_info
+from ..widgets import MovementDemo, ReferenceHandView, with_info
 from .base import Page, button, card, heading, muted
 
 
@@ -67,7 +67,12 @@ class SessionSetupPage(Page):
         self.notes.setPlaceholderText("Session notes (optional)")
         self.notes.setFixedHeight(70)
 
+        # Preview at the selected speed: the patient's own recorded reference (what they will
+        # follow in the session); the generic demo only if no reference can be loaded.
         self.demo = MovementDemo()
+        self.ref_preview = ReferenceHandView(ctx.landmark_set)
+        self.ref_preview.caption = "Patient's reference at selected speed"
+        self.ref_preview.hide()
         self.btn_start = button("▶  Start session", "primary", self._start)
 
         speed_row = QHBoxLayout()
@@ -115,7 +120,8 @@ class SessionSetupPage(Page):
 
         body = QHBoxLayout()
         body.addLayout(left, 3)
-        body.addWidget(card(self.demo, title="Movement"), 2)
+        body.addWidget(card(self.ref_preview, self.demo, title="Preview at selected speed",
+                            info="speed"), 2)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 20, 24, 20)
@@ -153,7 +159,15 @@ class SessionSetupPage(Page):
         mid = self.movement.currentData()
         row = self._status.get(mid)
         self.btn_start.setEnabled(row is not None)
+        ref = (self.ctx.db.latest_reference(self.ctx.patient_id, mid, self.ctx.landmark_set)
+               if row is not None else None)
+        duration = config.session_duration_s(self.speed.value())
+        self.ref_preview.mirror = self.ctx.mirror_preview()
+        self.ref_preview.set_reference(ref, duration)
+        self.ref_preview.setVisible(ref is not None)
+        self.demo.setVisible(ref is None)
         self.demo.set_movement(mid)
+        self.demo.set_duration(duration)
         if row is not None:
             self.ref_info.setText(f"Using reference from {row['created_at'][:16].replace('T', ' ')}"
                                   f" ({row['n_takes']} take{'s' if row['n_takes'] != 1 else ''})")
@@ -170,6 +184,8 @@ class SessionSetupPage(Page):
         v = self.speed.value()
         self.speed_label.setText(f"{v}%")
         d = config.session_duration_s(v)
+        self.ref_preview.set_duration(d)
+        self.demo.set_duration(d)
         self.duration_label.setText(
             f"Movement duration: {d:.1f} s  (reference {config.REF_DURATION_S:.0f} s at 100%)")
 

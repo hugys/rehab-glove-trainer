@@ -18,6 +18,13 @@ cat > "$APP/Contents/MacOS/launcher" <<EOF
 #!/bin/bash
 cd "$PROJECT"
 mkdir -p data
+echo "--- \$(date) ---" >> data/launcher.log
+# On Apple Silicon always run Python natively: if the app is opened "using Rosetta"
+# (Get Info checkbox, or macOS's choice for script apps), Python would start as Intel
+# and fail to load the arm64 numpy/Qt libraries.
+if [ "\$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+  exec arch -arm64 "$PROJECT/.venv/bin/python" main.py >> data/launcher.log 2>&1
+fi
 exec "$PROJECT/.venv/bin/python" main.py >> data/launcher.log 2>&1
 EOF
 chmod +x "$APP/Contents/MacOS/launcher"
@@ -34,6 +41,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleExecutable</key><string>launcher</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>LSArchitecturePriority</key><array><string>arm64</string><string>x86_64</string></array>
   <key>NSCameraUsageDescription</key><string>The camera tracks the hand during exercises.</string>
 </dict></plist>
 EOF

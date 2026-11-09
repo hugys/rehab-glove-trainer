@@ -31,6 +31,7 @@ class ReferenceHandView(QWidget):
         self._progress: float | None = None      # 0-100 driven externally; None = loop
         self._assisting: set[str] = set()
         self.mirror = False                      # match a mirrored camera preview
+        self.caption = "Your movement to follow"
         self._t0 = time.perf_counter()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.update)
@@ -45,6 +46,11 @@ class ReferenceHandView(QWidget):
         self._assisting = set()
         self._t0 = time.perf_counter()
         self.update()
+
+    def set_duration(self, duration_s: float):
+        """Change the looping speed (e.g. the clinician moved the speed slider)."""
+        self._duration = duration_s
+        self._t0 = time.perf_counter()
 
     def set_progress(self, progress_pct: float | None, assisting: set[str] | None = None):
         """Follow a running repetition (None = go back to looping)."""
@@ -103,5 +109,5 @@ class ReferenceHandView(QWidget):
         p.setPen(QColor(theme.MUTED))
         p.setFont(QFont(self.font().family(), 12))
         p.drawText(QRectF(r.left(), r.bottom() + 6, r.width(), 18), Qt.AlignCenter,
-                   f"Your movement to follow · {prog * 100:.0f}%")
+                   f"{self.caption} · {prog * 100:.0f}%")
         p.end()
