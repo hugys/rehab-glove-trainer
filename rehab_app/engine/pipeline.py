@@ -142,14 +142,15 @@ class PipelineEngine(RehabEngine):
         self._params = params
         self._hand_mm = params.hand_size_mm
         self._duration = config.session_duration_s(params.speed_pct)
+        tips = list(self.geom.tip_rows)
+        ref_reach = np.linalg.norm(reference.data[:, tips, :], axis=-1)   # (P, 5)
         self._assist = tc.StallAssist(self.geom, window_s=params.stall_window_s,
                                       move_eps=params.stall_move_eps_pct / 100.0,
                                       complete_tol=params.complete_tol_pct / 100.0,
-                                      start_grace_s=params.start_grace_s)
+                                      start_grace_s=params.start_grace_s,
+                                      ref_reach=ref_reach, duration_s=self._duration)
         self._target = reference.data[-1]          # fully completed pose of the exercise
-        tips = list(self.geom.tip_rows)
-        self._reach_start = np.linalg.norm(reference.data[0][tips], axis=1)
-        self._reach_end = np.linalg.norm(self._target[tips], axis=1)
+        self._reach_start, self._reach_end = ref_reach[0], ref_reach[-1]
         self._last = {}
         self._on_phase_start()
 
@@ -165,7 +166,7 @@ class PipelineEngine(RehabEngine):
                 pose = tc.normalize_pose(m.new_pts21, self.geom, False, True)  # live hand: no mirror
                 ref_pose = tc.interp_rows(self._ref.data, p)
                 err, _ = tc.finger_errors(ref_pose, pose, self.geom)
-                cmds, states = self._assist.update(pose, self._target, m.new_t)
+                cmds, states = self._assist.update(pose, self._target, m.new_t, p)
                 err_mm = {f: float(e * self._hand_mm) for f, e in zip(FINGERS, err)}
                 reach = np.linalg.norm(pose[list(self.geom.tip_rows)], axis=1)
                 moves = {f: servo_motion.plan_move(self._ref.movement_id, f, reach[i],

@@ -135,8 +135,8 @@ class SessionSetupPage(Page):
         tol = self.ctx.db.get_float("complete_tol_pct", config.COMPLETE_TOL_PCT)
         hand = self.ctx.hand_size_mm()
         self.assist_info.setText(
-            f"“Stopped” = fingertip moves less than {eps:g}% of hand size (≈{eps * hand / 100:.1f} mm) "
-            f"within t. “Complete” = within {tol:g}% (≈{tol * hand / 100:.1f} mm) of the end "
+            f"“Stopped” = fingertip moves less than {eps:g}% of hand size (≈{eps * hand / 100:.1f} mm, "
+            f"lowered automatically at slow speeds) within t while behind the reference. “Complete” = within {tol:g}% (≈{tol * hand / 100:.1f} mm) of the end "
             f"position. Glove output: {self.ctx.servo.status()}. (Adjust in Settings.)")
 
     def _movement_changed(self):

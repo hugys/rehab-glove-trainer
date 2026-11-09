@@ -193,3 +193,40 @@ def test_session_frames_carry_servo_moves():
             assert m.direction == fr.assist_cmd[f] and m.degrees > 0
             planned.add(f)
     assert planned                            # the simulated ring finger stalls
+
+
+@pytest.mark.parametrize("speed", [25, 50, 100, 200])
+def test_stall_is_speed_aware(speed):
+    """Keeping pace with a slow reference is not a stall; freezing halfway still is."""
+    ls = LandmarkSet.from_preset("12")
+    geom = tc.Geometry.from_landmark_set(ls)
+    ref = _record(MockEngine(ls), "precision_grip")
+    tips = list(geom.tip_rows)
+    reach = np.linalg.norm(ref.data[:, tips, :], axis=-1)
+    dur = config.session_duration_s(speed)
+    for freeze in (False, True):
+        sa = tc.StallAssist(geom, 1.0, 0.04, 0.08, 2.0, ref_reach=reach, duration_s=dur)
+        seen = set()
+        for k in range(int(dur * 30) + 1):
+            p = k / 30 / dur
+            pose = tc.interp_rows(ref.data, min(p, 0.5) if freeze else p)
+            _, states = sa.update(pose, ref.data[-1], k / 30, p)
+            seen |= set(states)
+        assert ("assisting" in seen) == freeze
+
+
+@pytest.mark.parametrize("speed", [50, 100, 200])
+def test_reference_follows_clinician_speed(speed):
+    """The pose the patient is compared against (and that the patient view shows) is the
+    reference stretched to the session duration set by the speed."""
+    ls = LandmarkSet.from_preset("12")
+    eng = MockEngine(ls)
+    ref = _record(eng)
+    eng.start_session(ref, SessionParams(speed, 10, 90, 1, 4, 8))
+    t = 2.0
+    for i in range(int(t * 30) + 1):
+        fr = eng.session_frame(i / 30)
+    expected = min(1.0, t / config.session_duration_s(speed))
+    assert fr.progress == pytest.approx(100 * expected)
+    assert np.allclose(fr.reference_landmarks,
+                       eng._display(tc.interp_rows(ref.data, expected)), atol=1e-6)

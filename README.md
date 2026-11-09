@@ -15,6 +15,12 @@ MediaPipe script (not included in this repo; its logic is ported into `rehab_app
 
 ## Run
 
+**Desktop icon (macOS):** run `./make_desktop_app.sh` once. It creates **Rehab Glove
+Trainer.app** on the Desktop, which you double-click to start the app without a Terminal.
+Output goes to `data/launcher.log`. Re-run the script if you move the project folder.
+
+**From a terminal:**
+
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -65,8 +71,13 @@ plus "glove helping" when it is being assisted.
 ## Glove assist (motors)
 
 The script's `StallAssist` is used as-is, per finger:
-- A finger counts as **stopped** if its fingertip has moved less than *X* % of hand size
-  during the last *t* seconds.
+- A finger counts as **stopped** if, during the last *t* seconds, its fingertip moved less
+  than the "not moving" limit, **and** it is more than 5 % of the movement behind where the
+  reference is at that moment.
+  - The limit is *X* % of hand size, lowered automatically at slow speeds to half of what
+    the reference itself moves in *t* (never below 1 % of hand size, about tracking jitter).
+  - Without this, at 25 % speed a patient following the reference perfectly was flagged as
+    stalled on every finger, because the reference itself moves less than *X* % per second.
 - If it is stopped and has not yet reached the final pose of the reference, the finger's
   servo is driven toward that pose until the finger is within the completion tolerance.
 

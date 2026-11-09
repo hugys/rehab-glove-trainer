@@ -82,8 +82,10 @@ class SettingsDialog(QDialog):
         self.tol.setValue(db.get_float("complete_tol_pct", config.COMPLETE_TOL_PCT))
         f3 = QFormLayout()
         f3.addRow("“Not moving” below", self.eps)
-        f3.addRow("", QLabel("Fingertip movement within the stall time below this counts as "
-                             "stopped. Too low and camera jitter prevents stalls registering."))
+        f3.addRow("", QLabel("Upper limit: fingertip movement within the stall time below this "
+                             "counts as stopped.\nAt slow speeds it is lowered automatically to half "
+                             "of what the reference moves in that time,\nand a finger only counts as "
+                             "stalled if it is also behind the reference."))
         f3.addRow("“Complete” within", self.tol)
         f3.addRow("", QLabel("The stall time t itself is set per session on the setup screen."))
 
