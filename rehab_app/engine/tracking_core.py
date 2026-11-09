@@ -37,6 +37,15 @@ CW, CCW, HOLD = +1, -1, 0      # servo direction codes
 STALL_WINDOW_S = 1.0
 STALL_MOVE_EPS = 0.04
 COMPLETE_TOL = 0.08
+# Speed-aware stall detection (used when the reference reach curve is given):
+STALL_EPS_FLOOR = 0.01         # never call less movement than tracking jitter "moving"
+STALL_EPS_FRACTION = 0.5       # "stopped" = under half of what the reference moves in t
+STALL_LAG = 0.05               # ...and at least 5 % of the movement behind the reference
+MIN_REACH_SPAN = 0.02          # fingers the reference barely moves: no lag check
+# Per-finger completion (used with complete_tol_move):
+COMPLETE_TOL_FLOOR = 0.02      # never demand more precision than tracking can deliver
+STILL_FINGER_SPAN = 0.05       # reference moves the finger less than this = finger should
+                               # stay put; it keeps the absolute `complete_tol` instead
 
 
 @dataclass(frozen=True)
@@ -150,14 +159,33 @@ class StallAssist:
     target (within `complete_tol`), assist: drive it the rest of the way. Once assisting,
     keep going until done (motor-induced motion must not be read as the patient resuming).
 
-    update(cur_pose, target_pose, now) -> (cmds, states)
+    update(cur_pose, target_pose, now, progress=None) -> (cmds, states)
       cmds   : 5 ints CW/CCW/HOLD (FINGERS order)
       states : 5 of "idle" (filling the window) / "moving" / "assisting" / "done"
+
+    Speed awareness (added for the app): with `ref_reach` (P, 5 fingertip reach along the
+    reference) and `duration_s` (repetition length at the clinician's speed), a finger
+    only counts as stalled if
+      1. it moved less than min(move_eps, STALL_EPS_FRACTION x what the reference moves
+         in `window_s` at this speed) - so at 25 % speed the bar drops with the reference,
+         never below STALL_EPS_FLOOR (tracking jitter), and
+      2. it is more than STALL_LAG of the movement behind where the reference is now
+         (`progress` 0-1) - a patient keeping pace with a slow reference is never "stalled".
+    Without `ref_reach` the original script's rule applies (fixed move_eps, no lag check).
+
+    Per-finger completion (added for the app): with `ref_reach` and `complete_tol_move`
+    (fraction), a finger the reference moves is "done" once it is within
+    complete_tol_move x its own movement of the end position - or past it in the
+    movement's direction (closing a fist tighter than the reference counts as done; it is
+    never driven back). Floor COMPLETE_TOL_FLOOR. A flat tolerance was half of a small
+    movement (precision-grip pinky) but under 7 % of a full fist. Fingers the reference
+    barely moves (< STILL_FINGER_SPAN) keep the absolute `complete_tol` both ways.
     """
 
     def __init__(self, geom: Geometry, window_s: float = STALL_WINDOW_S,
                  move_eps: float = STALL_MOVE_EPS, complete_tol: float = COMPLETE_TOL,
-                 start_grace_s: float = 0.0):
+                 start_grace_s: float = 0.0, ref_reach: np.ndarray | None = None,
+                 duration_s: float | None = None, complete_tol_move: float | None = None):
         self.geom = geom
         self.window_s = window_s
         # Added for the app: no stall is judged before `start_grace_s` into the rep, so a
@@ -166,7 +194,42 @@ class StallAssist:
         self.start_grace_s = start_grace_s
         self.move_eps = move_eps
         self.complete_tol = complete_tol
+        n = len(FINGERS)
+        self._ref_reach = None if ref_reach is None else np.asarray(ref_reach, dtype=float)
+        if self._ref_reach is not None and duration_s:
+            self._start, span = self._ref_reach[0], self._ref_reach[-1] - self._ref_reach[0]
+            self._span = span
+            expected = np.abs(span) * window_s / duration_s     # reference motion within t
+            self.eps = np.minimum(move_eps, np.maximum(STALL_EPS_FLOOR,
+                                                       STALL_EPS_FRACTION * expected))
+        else:
+            self._ref_reach = None
+            self.eps = np.full(n, move_eps)
+        # per finger: completion tolerance and the direction that counts as "past the end"
+        self.tol = np.full(n, complete_tol)
+        self._dir = np.zeros(n)                  # 0 = symmetric (original rule)
+        if self._ref_reach is not None and complete_tol_move is not None:
+            moving = np.abs(self._span) >= STILL_FINGER_SPAN
+            self.tol = np.where(moving, np.maximum(COMPLETE_TOL_FLOOR,
+                                                   complete_tol_move * np.abs(self._span)),
+                                complete_tol)
+            self._dir = np.where(moving, np.sign(self._span), 0.0)
         self.reset()
+
+    def _complete(self, i: int, remaining: float) -> bool:
+        if self._dir[i] == 0:
+            return abs(remaining) <= self.tol[i]
+        return remaining * self._dir[i] <= self.tol[i]      # within tol, or overshot
+
+    def _behind(self, i: int, reach: float, progress: float | None) -> bool:
+        """Finger i is clearly behind the reference at this progress (always True
+        without a reference curve, i.e. the original rule)."""
+        if self._ref_reach is None or progress is None or abs(self._span[i]) < MIN_REACH_SPAN:
+            return True
+        ref_now = interp_rows(self._ref_reach, progress)[i]
+        pos_cur = (reach - self._start[i]) / self._span[i]
+        pos_ref = (ref_now - self._start[i]) / self._span[i]
+        return pos_cur < pos_ref - STALL_LAG
 
     def reset(self):
         self._history = [[] for _ in FINGERS]
@@ -174,7 +237,7 @@ class StallAssist:
         self._done = [False] * len(FINGERS)
         self._t_start = None
 
-    def update(self, cur_pose, target_pose, now: float):
+    def update(self, cur_pose, target_pose, now: float, progress: float | None = None):
         if self._t_start is None:
             self._t_start = now
         in_grace = (now - self._t_start) < self.start_grace_s
@@ -189,7 +252,7 @@ class StallAssist:
                 hist.pop(0)
 
             remaining = reach_tgt[i] - reach_cur[i]
-            if self._done[i] or abs(remaining) <= self.complete_tol:
+            if self._done[i] or self._complete(i, remaining):
                 self._done[i] = True
                 self._assisting[i] = False
                 cmds.append(HOLD)
@@ -199,7 +262,8 @@ class StallAssist:
             if not self._assisting[i]:
                 window_full = bool(hist) and (now - hist[0][0]) >= self.window_s * 0.95
                 spread = (max(r for _, r in hist) - min(r for _, r in hist)) if hist else 0.0
-                if window_full and spread < self.move_eps and not in_grace:
+                stopped = window_full and spread < self.eps[i]
+                if stopped and not in_grace and self._behind(i, reach_cur[i], progress):
                     self._assisting[i] = True
                 else:
                     cmds.append(HOLD)

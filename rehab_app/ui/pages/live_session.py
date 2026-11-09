@@ -9,19 +9,22 @@ from ... import config
 from ...config import FINGERS, MOVEMENTS_BY_ID
 from ...data.database import corr_mask_from
 from ...data.video import video_path
+from ...hardware import servo_motion
 from ...hardware.servo_link import format_line
 from .. import theme
 from ..video_player import play_video
-from ..widgets import CameraView, FingerErrorPanel, HandComparisonView, MovementProgressBar
+from ..units import fmt_err
+from ..widgets import (CameraView, FingerErrorPanel, HandComparisonView, MovementProgressBar,
+                       with_info)
 from .base import Page, button, card, heading, muted
 
 
-def _stat(label: str) -> tuple[QLabel, QVBoxLayout]:
+def _stat(label: str, info: str | None = None) -> tuple[QLabel, QVBoxLayout]:
     val = QLabel("--")
     val.setObjectName("h2")
     lay = QVBoxLayout()
     lay.setSpacing(0)
-    lay.addWidget(muted(label))
+    lay.addWidget(with_info(muted(label), info) if info else muted(label))
     lay.addWidget(val)
     return val, lay
 
@@ -52,9 +55,9 @@ class LiveSessionPage(Page):
         self.progress = MovementProgressBar()
 
         self.v_rep, l_rep = _stat("Repetition")
-        self.v_err, l_err = _stat("Mean error")
-        self.v_conf, l_conf = _stat("Tracking confidence")
-        self.v_servo, l_servo = _stat("Glove command")
+        self.v_err, l_err = _stat("Mean error", "mean_error")
+        self.v_conf, l_conf = _stat("Tracking confidence", "confidence")
+        self.v_servo, l_servo = _stat("Glove command", "glove_cmd")
         self.servo_status = muted("")
         stats = QGridLayout()
         for i, l in enumerate((l_rep, l_err, l_conf, l_servo)):
@@ -89,7 +92,7 @@ class LiveSessionPage(Page):
                        f"<span style='color:{theme.ASSIST}'><b>ASSIST</b></span> = finger stalled, "
                        f"glove driving it")
         legend.setWordWrap(False)
-        right.addWidget(card(self.fingers, legend, title="Per finger"), 3)
+        right.addWidget(card(self.fingers, legend, title="Per finger", info="finger_panel"), 3)
         right.addWidget(card(self.hand), 2)
         right.addWidget(card(self.events, title="Repetitions & events (double-click ▶ to play video)"))
         self.events.itemDoubleClicked.connect(self._play_item)
@@ -127,9 +130,10 @@ class LiveSessionPage(Page):
         p = self.ctx.patient()
         self.subtitle.setText(
             f"{p['name']} · affected {p['affected_hand']} hand · speed {params.speed_pct:.0f}% "
-            f"({dur:.1f} s) · {reps} reps · threshold {params.threshold_mm:.1f} mm · "
+            f"({dur:.1f} s) · {reps} reps · "
+            f"threshold {fmt_err(params.threshold_pct, params.hand_size_mm)} · "
             f"assist after {params.stall_window_s:.1f} s stall (grace {params.start_grace_s:.1f} s)")
-        self.fingers.set_threshold(params.threshold_mm)
+        self.fingers.set_threshold(params.threshold_pct, params.hand_size_mm)
         self.fingers.clear()
         self.hand.set_poses(None, None)
         self.hand.reset_scale()
@@ -142,7 +146,8 @@ class LiveSessionPage(Page):
         self.servo_status.setText(f"Glove link: {self.ctx.servo.status()}")
         self._update_buttons()
         if self.ctx.patient_display:
-            self.ctx.patient_display.show_movement(m.id, "session", params.threshold_mm)
+            self.ctx.patient_display.show_movement(m.id, "session", params.threshold_pct,
+                                                   reference, params.speed_pct)
         self.ctx.worker.open_camera()
 
     def on_leave(self):
@@ -192,9 +197,10 @@ class LiveSessionPage(Page):
             self.session_id = self.ctx.db.create_session(
                 self.ctx.patient_id, self.reference.movement_id,
                 self.reference.meta.get("reference_id"), self.ctx.landmark_set.preset,
-                prm.speed_pct, prm.threshold_mm, self.reps, self.notes,
+                prm.speed_pct, prm.threshold_pct, self.reps, self.notes,
                 hand_size_mm=prm.hand_size_mm, stall_window_s=prm.stall_window_s,
-                stall_move_eps_pct=prm.stall_move_eps_pct, complete_tol_pct=prm.complete_tol_pct,
+                stall_move_eps_pct=prm.stall_move_eps_pct,
+                complete_tol_move_pct=prm.complete_tol_move_pct,
                 start_grace_s=prm.start_grace_s, servo=self.ctx.servo.status())
         self._running = True
         self._buffer = []
@@ -206,7 +212,8 @@ class LiveSessionPage(Page):
         self._update_buttons()
         if self.ctx.patient_display:
             self.ctx.patient_display.show_movement(self.reference.movement_id, "session",
-                                                   prm.threshold_mm)
+                                                   prm.threshold_pct, self.reference,
+                                                   prm.speed_pct)
         path = (video_path(self.ctx.patient_id, f"session{self.session_id}_rep{self.rep + 1}")
                 if self.ctx.record_videos() else None)
         self.ctx.worker.run_repetition(self.reference, prm, path)
@@ -249,7 +256,7 @@ class LiveSessionPage(Page):
             return
         self.progress.set_progress(frame.progress, elapsed, duration)
         self.hand.set_poses(frame.landmarks, frame.reference_landmarks)
-        self.fingers.set_values(frame.finger_error_mm, frame.assist_state)
+        self.fingers.set_values(frame.finger_error_pct, frame.assist_state)
 
         # Glove: send the stall-assist command (rate-limited inside the link)
         if self.ctx.servo.send(frame.assist_cmd):
@@ -257,26 +264,31 @@ class LiveSessionPage(Page):
 
         if not frame.new_measurement:
             return
-        if frame.overall_error_mm is not None:
-            self.v_err.setText(f"{frame.overall_error_mm:.1f} mm")
-            self._rep_err_sum += frame.overall_error_mm
+        if frame.overall_error_pct is not None:
+            self.v_err.setText(fmt_err(frame.overall_error_pct, self.params.hand_size_mm))
+            self._rep_err_sum += frame.overall_error_pct
             self._rep_err_n += 1
         states = frame.assist_state or {}
+        moves = frame.servo_moves or {}
+        triggered = [f for f, st in states.items()
+                     if st == "assisting" and self._prev_states.get(f) != "assisting"]
+        if triggered:
+            # Stall of t seconds detected -> hand the planned moves to the servos
+            msg = servo_motion.trigger([moves[f] for f in triggered if f in moves])
+            self._event(f"  Rep {self.rep + 1}: {', '.join(triggered)} stopped at "
+                        f"{frame.progress:.0f}% → {msg}", theme.ASSIST)
+            self._rep_assisted.update(triggered)
         for f, st in states.items():
             if st != self._prev_states.get(f):
-                if st == "assisting":
-                    self._rep_assisted.add(f)
-                    self._event(f"  Rep {self.rep + 1}: {f} stopped at {frame.progress:.0f}% "
-                                f"→ glove assisting", theme.ASSIST)
-                elif st == "done" and f in self._rep_assisted:
+                if st == "done" and f in self._rep_assisted:
                     self._event(f"  Rep {self.rep + 1}: {f} reached end position → assist stopped",
                                 theme.ACCENT)
         self._prev_states = dict(states)
-        errs = frame.finger_error_mm or {}
+        errs = frame.finger_error_pct or {}
         cmds = frame.assist_cmd or {}
         self._buffer.append((
             self.rep + 1, elapsed, frame.progress, frame.confidence, int(frame.hand_detected),
-            *[errs.get(f) for f in FINGERS], frame.overall_error_mm,
+            *[errs.get(f) for f in FINGERS], frame.overall_error_pct,
             corr_mask_from(frame.correction),
             *[states.get(f) for f in FINGERS], *[cmds.get(f) for f in FINGERS]))
 
@@ -297,7 +309,8 @@ class LiveSessionPage(Page):
         self._buffer = []
         mean = self._rep_err_sum / self._rep_err_n if self._rep_err_n else float("nan")
         assisted = ", ".join(sorted(self._rep_assisted, key=FINGERS.index)) or "none"
-        self._event(f"{'▶ ' if video else ''}Rep {self.rep}: mean error {mean:.1f} mm · "
+        self._event(f"{'▶ ' if video else ''}Rep {self.rep}: mean error "
+                    f"{fmt_err(mean, self.params.hand_size_mm)} · "
                     f"assisted: {assisted}", video=video or None)
         self.v_rep.setText(f"{self.rep} / {self.reps}")
         pd = self.ctx.patient_display

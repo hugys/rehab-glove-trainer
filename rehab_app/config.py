@@ -133,23 +133,27 @@ COUNTDOWN_S = 3
 SPEED_MIN_PCT = 25
 SPEED_MAX_PCT = 200
 SPEED_DEFAULT_PCT = 100
-THRESHOLD_DEFAULT_MM = 10.0
+THRESHOLD_DEFAULT_PCT = 11.0  # error threshold, % of hand size (~10 mm on a 90 mm hand)
 REPS_DEFAULT = 5
-TAKES_DEFAULT = 1             # reference takes; 3+ gives a real tolerance band
+TAKES_DEFAULT = 3             # reference takes averaged into one reference
 VIDEO_FPS = 30
 
-# Patient hand size (wrist -> middle-finger MCP, mm). The engine works in
-# hand-size units (as in the team's script); this converts them to mm for display.
+# Patient hand size (wrist -> middle-finger MCP, mm). Optional: the engine works in
+# hand-size units measured from the camera (as in the team's script), so every result is
+# a % of hand size. A measured hand size only adds mm next to those numbers. The default
+# is used for drawing hands to scale when no size was entered.
 HAND_SIZE_DEFAULT_MM = 90.0
 
 # Stall-triggered assist (drives the glove motors). The clinician sets the stall
-# time t per session; the other two are in % of hand size (Settings > Assist).
+# time t per session; the other two are set in Settings > Glove assist tuning.
 STALL_TIME_DEFAULT_S = 1.0
 STALL_TIME_MIN_S = 0.2
 STALL_TIME_MAX_S = 10.0
 START_GRACE_DEFAULT_S = 2.0   # no stall is judged in the first seconds of a rep
-STALL_MOVE_EPS_PCT = 4.0      # less fingertip movement than this within t = "stopped"
-COMPLETE_TOL_PCT = 8.0        # this close to the final pose = "movement complete"
+STALL_MOVE_EPS_PCT = 4.0      # % of hand size: less fingertip movement within t = "stopped"
+                              # (upper limit - lowered automatically at slow speeds)
+COMPLETE_TOL_MOVE_PCT = 10.0  # % of EACH finger's own movement in the reference: this close
+                              # to the end position (or past it) = "movement complete"
 
 
 def session_duration_s(speed_pct: float) -> float:

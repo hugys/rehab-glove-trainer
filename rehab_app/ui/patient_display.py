@@ -5,9 +5,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from ..config import APP_NAME, MOVEMENTS_BY_ID
+from .. import config
+from ..config import APP_NAME, MOVEMENTS_BY_ID, session_duration_s
 from . import theme
-from .widgets import CameraView, FingerErrorPanel, MovementDemo, MovementProgressBar
+from .widgets import (CameraView, FingerErrorPanel, MovementDemo, MovementProgressBar,
+                      ReferenceHandView)
 
 
 class PatientDisplay(QWidget):
@@ -26,10 +28,14 @@ class PatientDisplay(QWidget):
         self.instruction.setStyleSheet(f"font-size: 22px; color: {theme.MUTED};")
 
         self.demo = MovementDemo()
+        # session: the patient's own recorded healthy-hand reference replaces the demo
+        self.ref_hand = ReferenceHandView(landmark_set)
+        self.ref_hand.hide()
         self.camera = CameraView(landmark_set)
         self.camera.placeholder = ""
         mid = QHBoxLayout()
         mid.addWidget(self.demo, 1)
+        mid.addWidget(self.ref_hand, 1)
         mid.addWidget(self.camera, 1)
 
         self.status = QLabel("")
@@ -79,25 +85,36 @@ class PatientDisplay(QWidget):
         self.title.setText(f"Hello, {patient_name.split()[0]}" if patient_name else "Welcome")
         self.instruction.setText("Your therapist will start the next exercise shortly.")
         self.demo.set_movement(None)
+        self.demo.show()
+        self.ref_hand.set_reference(None, 4.0)
+        self.ref_hand.hide()
         self.camera.clear()
         self.status.setText("")
         self._status_style()
         self.progress.reset()
         self.fingers.hide()
 
-    def show_movement(self, movement_id: str, mode: str, threshold: float | None = None):
-        """mode: 'reference' (healthy hand) or 'session' (affected hand)."""
+    def show_movement(self, movement_id: str, mode: str, threshold: float | None = None,
+                      reference=None, speed_pct: float = 100.0):
+        """mode: 'reference' (healthy hand) or 'session' (affected hand). In a session,
+        pass the recorded reference so the patient follows their own healthy hand."""
         m = MOVEMENTS_BY_ID[movement_id]
         self.title.setText(m.name)
         hand = "unaffected" if mode == "reference" else "affected"
         self.instruction.setText(f"Use your {hand} hand. {m.instruction}")
-        self.demo.set_movement(movement_id)
+        use_ref = mode == "session" and reference is not None
+        self.demo.set_movement(None if use_ref else movement_id)
+        self.demo.setVisible(not use_ref)
+        self.ref_hand.setVisible(use_ref)
+        if use_ref:
+            self.ref_hand.mirror = self.camera.mirror
+            self.ref_hand.set_reference(reference, session_duration_s(speed_pct))
         self.status.setText("Get ready…")
         self._status_style()
         self.progress.reset()
         self.progress.set_color(theme.ACCENT)
         if mode == "session":
-            self.fingers.set_threshold(threshold or 10)
+            self.fingers.set_threshold(threshold or config.THRESHOLD_DEFAULT_PCT)
             self.fingers.clear()
             self.fingers.show()
         else:
@@ -115,16 +132,20 @@ class PatientDisplay(QWidget):
         if recording:
             self.progress.set_progress(frame.progress, elapsed, duration)
             states = frame.assist_state or {}
+            if phase == "session":
+                self.ref_hand.set_progress(frame.progress,
+                                           {f for f, s in states.items() if s == "assisting"})
             if not frame.hand_detected:
                 self.status.setText("Keep your hand in view")
             elif phase == "session" and "assisting" in states.values():
                 self.status.setText("The glove is helping - relax and let it guide you")
             else:
                 self.status.setText("Keep going…")
-            if phase == "session" and frame.finger_error_mm:
-                self.fingers.set_values(frame.finger_error_mm, states)
+            if phase == "session" and frame.finger_error_pct:
+                self.fingers.set_values(frame.finger_error_pct, states)
 
     def set_status(self, text: str, color: str | None = None):
+        self.ref_hand.set_progress(None)          # rep over -> back to looping preview
         self.status.setText(text)
         self._status_style(color)
         if color:

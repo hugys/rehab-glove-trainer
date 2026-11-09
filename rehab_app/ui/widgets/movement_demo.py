@@ -25,11 +25,16 @@ class MovementDemo(QWidget):
         self._pixmap: QPixmap | None = None
         self._movie: QMovie | None = None
         self._t0 = time.perf_counter()
+        self.duration_s = REF_DURATION_S       # movement length of one loop
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.update)
         self._timer.start(33)
         self.setMinimumSize(200, 200)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def set_duration(self, duration_s: float):
+        self.duration_s = duration_s
+        self._t0 = time.perf_counter()
 
     def set_movement(self, movement_id: str | None):
         self._movement_id = movement_id
@@ -62,9 +67,9 @@ class MovementDemo(QWidget):
 
     def _draw_animated(self, p: QPainter, r: QRectF):
         # 4 s movement, 1 s hold, repeat
-        cycle = REF_DURATION_S + 1.0
+        cycle = self.duration_s + 1.0
         t = (time.perf_counter() - self._t0) % cycle
-        prog = min(1.0, t / REF_DURATION_S)
+        prog = min(1.0, t / self.duration_s)
         prof = _PROFILES[self._movement_id]
         flex = {f: prof[f][0] + (prof[f][1] - prof[f][0]) * _smooth(prog) for f in FINGERS}
         pose = hand_pose21(flex)

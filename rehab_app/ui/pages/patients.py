@@ -4,12 +4,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogButtonBox,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QMessageBox,
                                QPlainTextEdit, QTableWidget, QTableWidgetItem, QVBoxLayout)
 
 from ... import config
+from ..widgets import Collapsible, header_info, with_info
 from .base import Page, button, heading, muted
 
 
@@ -28,15 +29,17 @@ class PatientDialog(QDialog):
         self.hand.addItem("Left hand affected", "left")
         if patient:
             self.hand.setCurrentIndex(0 if patient["affected_hand"] == "right" else 1)
+        known = bool(patient and patient["hand_size_known"])
+        self.hand_known = QCheckBox("Hand size measured (adds mm to the results)")
+        self.hand_known.setChecked(known)
         self.hand_size = QDoubleSpinBox()
         self.hand_size.setRange(50, 150)
         self.hand_size.setDecimals(0)
         self.hand_size.setSuffix(" mm")
         self.hand_size.setValue(float(patient["hand_size_mm"] or config.HAND_SIZE_DEFAULT_MM)
                                 if patient else config.HAND_SIZE_DEFAULT_MM)
-        self.hand_size.setToolTip("Distance from the wrist crease to the middle-finger knuckle "
-                                  "(MCP). Tracking works in multiples of this length; it is used "
-                                  "to report errors in mm.")
+        self.hand_size.setEnabled(known)
+        self.hand_known.toggled.connect(self.hand_size.setEnabled)
         self.notes = QPlainTextEdit(patient["notes"] or "" if patient else "")
         self.notes.setFixedHeight(90)
 
@@ -45,16 +48,25 @@ class PatientDialog(QDialog):
         form.addRow("Patient ID", self.code)
         form.addRow("Date of birth", self.dob)
         form.addRow("Affected hand *", self.hand)
-        form.addRow("Hand size", self.hand_size)
+        form.addRow("Notes", self.notes)
+
+        # Optional: everything is measured in % of hand size; mm only if measured
+        self.advanced = Collapsible("Advanced")
+        adv = QFormLayout(self.advanced.content)
+        adv.setContentsMargins(0, 4, 0, 0)
+        adv.addRow("", self.hand_known)
+        adv.addRow(with_info("Hand size", "hand_size"), self.hand_size)
         hint = QLabel("Wrist crease → middle-finger knuckle. Measure with a ruler.")
         hint.setObjectName("muted")
-        form.addRow("", hint)
-        form.addRow("Notes", self.notes)
+        adv.addRow("", hint)
+        if known:
+            self.advanced.toggle.setChecked(True)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self._accept)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
         lay.addLayout(form)
+        lay.addWidget(self.advanced)
         lay.addWidget(bb)
 
     def _accept(self):
@@ -67,7 +79,7 @@ class PatientDialog(QDialog):
         return dict(name=self.name.text().strip(), patient_code=self.code.text().strip(),
                     dob=self.dob.text().strip(), affected_hand=self.hand.currentData(),
                     notes=self.notes.toPlainText().strip(),
-                    hand_size_mm=self.hand_size.value())
+                    hand_size_mm=self.hand_size.value() if self.hand_known.isChecked() else None)
 
 
 class PatientsPage(Page):
@@ -82,6 +94,7 @@ class PatientsPage(Page):
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Name", "Patient ID", "Affected hand", "Hand size",
                                               "Sessions", "Added"])
+        header_info(self.table, 3, "Hand size", "hand_size")
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -120,7 +133,8 @@ class PatientsPage(Page):
         self.table.setRowCount(len(rows))
         for i, p in enumerate(rows):
             vals = [p["name"], p["patient_code"] or "", p["affected_hand"].capitalize(),
-                    f"{p['hand_size_mm']:.0f} mm", str(p["n_sessions"]), p["created_at"][:10]]
+                    f"{p['hand_size_mm']:.0f} mm" if p["hand_size_known"] else "not measured",
+                    str(p["n_sessions"]), p["created_at"][:10]]
             for j, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 item.setData(Qt.UserRole, p["id"])

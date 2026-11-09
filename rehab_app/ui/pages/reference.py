@@ -17,13 +17,14 @@ from ...config import MOVEMENTS, MOVEMENTS_BY_ID, REF_DURATION_S
 from ...data.video import video_path
 from .. import theme
 from ..video_player import play_video
-from ..widgets import CameraView, MovementDemo, MovementProgressBar
+from ..widgets import CameraView, Collapsible, MovementDemo, MovementProgressBar, with_info
 from .base import Page, button, card, heading, muted
 
 
-def fingertip_reach_mm(ref, landmark_set, hand_size_mm: float) -> dict[str, np.ndarray]:
-    """Distance (mm) from wrist to each finger's most distal tracked point, per progress step."""
-    scale = hand_size_mm if ref.units == "hand" else 1.0
+def fingertip_reach(ref, landmark_set, hand_size_mm: float | None) -> dict[str, np.ndarray]:
+    """Distance from wrist to each finger's most distal tracked point, per progress step:
+    mm if the hand size is known, otherwise % of hand size."""
+    scale = (hand_size_mm if hand_size_mm else 100.0) if ref.units == "hand" else 1.0
     out = {}
     for f, rows in landmark_set.finger_groups().items():
         if rows:
@@ -48,8 +49,6 @@ class ReferencePage(Page):
         self.takes = QSpinBox()
         self.takes.setRange(1, 5)
         self.takes.setValue(int(ctx.db.get_setting("ref_takes", str(config.TAKES_DEFAULT))))
-        self.takes.setToolTip("Several takes are averaged; their spread sets the tolerance band. "
-                              "3 takes recommended.")
         self.takes.valueChanged.connect(lambda _: self._set_state(self._state))
         self.instruction = muted("")
         self.hand_label = QLabel()
@@ -67,18 +66,21 @@ class ReferencePage(Page):
         pg.setConfigOptions(antialias=True, background="w", foreground=theme.TEXT)
         self.plot = pg.PlotWidget()
         self.plot.setLabel("bottom", "Progress", units="%")
-        self.plot.setLabel("left", "Wrist → fingertip (mm)")
+        self.plot.setLabel("left", "Wrist → fingertip")
         self.plot.addLegend(offset=(-10, 10))
         self.plot.setMinimumHeight(190)
         self.review_info = muted("")
         self.video_row = QHBoxLayout()
         vids = QWidget()
         vids.setLayout(self.video_row)
-        self.review = card(self.review_info, self.plot, vids, title="Captured reference")
+        self.review = card(self.review_info, self.plot, vids, title="Captured reference",
+                           info="rom")
         self.review.hide()
 
-        takes_row = QHBoxLayout()
-        takes_row.addWidget(QLabel("Takes"))
+        self.advanced = Collapsible("Advanced")
+        takes_row = QHBoxLayout(self.advanced.content)
+        takes_row.setContentsMargins(0, 0, 0, 0)
+        takes_row.addWidget(with_info("Takes", "takes"))
         takes_row.addWidget(self.takes)
         takes_row.addStretch()
 
@@ -86,7 +88,7 @@ class ReferencePage(Page):
         left.addWidget(heading("Record reference"))
         left.addWidget(QLabel("Movement"))
         left.addWidget(self.movement)
-        left.addLayout(takes_row)
+        left.addWidget(self.advanced)
         left.addWidget(self.hand_label)
         left.addWidget(self.instruction)
         left.addWidget(card(self.demo, title="Demonstration"), 1)
@@ -256,16 +258,19 @@ class ReferencePage(Page):
         self.progress.set_progress(100, REF_DURATION_S, REF_DURATION_S)
         hand = self.ctx.hand_size_mm()
         self.plot.clear()
-        for f, reach in fingertip_reach_mm(ref, self.ctx.landmark_set, hand).items():
+        unit = "mm" if hand else "% of hand size"
+        self.plot.setLabel("left", f"Wrist → fingertip ({unit})")
+        for f, reach in fingertip_reach(ref, self.ctx.landmark_set, hand).items():
             self.plot.plot(ref.progress, reach, pen=pg.mkPen(theme.FINGER_COLORS[f], width=2),
                            name=f.capitalize())
         info = [f"{ref.n_takes} take(s) averaged."]
         if ref.rom is not None:
             info.append("Fingertip range of motion: " + ", ".join(
-                f"{f} {r * hand:.0f} mm" for f, r in zip(config.FINGERS, ref.rom)))
+                (f"{f} {r * hand:.0f} mm" if hand else f"{f} {r * 100:.0f} %")
+                for f, r in zip(config.FINGERS, ref.rom)))
         if ref.n_takes == 1:
-            info.append("Single take: the tolerance band uses its floor value - record 3 takes "
-                        "to capture natural variability.")
+            info.append("Single take: the reference is one recording. 3 takes (Advanced) "
+                        "average out natural wobble.")
         info += [f"⚠ {w}" for w in self._warnings]
         self.review_info.setText("\n".join(info))
         while self.video_row.count():

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .. import config
 from ..config import LandmarkSet
 from ..data.database import Database
 from ..engine.interface import RehabEngine
@@ -25,12 +24,13 @@ class AppContext:
     def patient(self):
         return self.db.get_patient(self.patient_id) if self.patient_id else None
 
-    def hand_size_mm(self) -> float:
+    def hand_size_mm(self) -> float | None:
+        """The patient's measured hand size, or None if it wasn't entered (results are
+        then shown in % of hand size only)."""
         p = self.patient()
-        try:
-            return float(p["hand_size_mm"]) if p and p["hand_size_mm"] else config.HAND_SIZE_DEFAULT_MM
-        except (KeyError, IndexError):
-            return config.HAND_SIZE_DEFAULT_MM
+        if not p or not p["hand_size_known"] or not p["hand_size_mm"]:
+            return None
+        return float(p["hand_size_mm"])
 
     def record_videos(self) -> bool:
         return self.db.get_setting("record_videos", "1") == "1"

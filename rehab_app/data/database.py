@@ -80,7 +80,10 @@ CREATE TABLE IF NOT EXISTS settings (
 
 # Columns added after the first release - applied to existing databases on open.
 MIGRATIONS = {
-    "patients": [("hand_size_mm", f"REAL NOT NULL DEFAULT {config.HAND_SIZE_DEFAULT_MM}")],
+    # hand_size_known: 0 = not measured (results in % of hand size only). Patients created
+    # before this column existed had to enter a size, so they default to known.
+    "patients": [("hand_size_mm", f"REAL NOT NULL DEFAULT {config.HAND_SIZE_DEFAULT_MM}"),
+                 ("hand_size_known", "INTEGER NOT NULL DEFAULT 1")],
     "reference_trajectories": [
         ("landmark_ids", "TEXT"), ("units", "TEXT NOT NULL DEFAULT 'mm'"),
         ("n_takes", "INTEGER NOT NULL DEFAULT 1"), ("tolerance", "BLOB"), ("rom", "BLOB"),
@@ -88,6 +91,10 @@ MIGRATIONS = {
     "sessions": [
         ("hand_size_mm", "REAL"), ("stall_window_s", "REAL"), ("stall_move_eps_pct", "REAL"),
         ("complete_tol_pct", "REAL"), ("start_grace_s", "REAL"), ("servo", "TEXT"),
+        # err_units: 'mm' = sessions recorded before errors moved to % of hand size
+        # (err_* and threshold_mm in mm); 'pct' = err_* and threshold_pct in % of hand size.
+        ("err_units", "TEXT NOT NULL DEFAULT 'mm'"), ("threshold_pct", "REAL"),
+        ("complete_tol_move_pct", "REAL"),
     ],
     "session_frames": [(f"state_{f}", "TEXT") for f in FINGERS]
                       + [(f"cmd_{f}", "INTEGER") for f in FINGERS],
@@ -102,6 +109,11 @@ FRAME_INSERT_COLS = ["rep", "t_s", "progress", "confidence", "hand_detected", *E
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def session_threshold(s) -> float:
+    """The session's error threshold in the same units as its err_* columns."""
+    return s["threshold_pct"] if s["err_units"] == "pct" else s["threshold_mm"]
 
 
 def corr_mask_from(correction: dict[str, bool] | None) -> int:
@@ -154,18 +166,24 @@ class Database:
 
     # ---- patients ----------------------------------------------------------
     def add_patient(self, name: str, affected_hand: str, patient_code: str = "",
-                    dob: str = "", notes: str = "",
-                    hand_size_mm: float = config.HAND_SIZE_DEFAULT_MM) -> int:
+                    dob: str = "", notes: str = "", hand_size_mm: float | None = None) -> int:
+        """hand_size_mm None = not measured."""
+        known = hand_size_mm is not None
         cur = self.conn.execute(
             "INSERT INTO patients(name, patient_code, affected_hand, dob, notes, hand_size_mm,"
-            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (name, patient_code, affected_hand, dob, notes, hand_size_mm, _now()))
+            " hand_size_known, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, patient_code, affected_hand, dob, notes,
+             hand_size_mm if known else config.HAND_SIZE_DEFAULT_MM, int(known), _now()))
         self.conn.commit()
         return cur.lastrowid
 
     def update_patient(self, patient_id: int, **fields) -> None:
         allowed = {"name", "patient_code", "affected_hand", "dob", "notes", "hand_size_mm"}
         fields = {k: v for k, v in fields.items() if k in allowed}
+        if "hand_size_mm" in fields:             # None = not measured
+            fields["hand_size_known"] = int(fields["hand_size_mm"] is not None)
+            if fields["hand_size_mm"] is None:
+                del fields["hand_size_mm"]
         if not fields:
             return
         sets = ", ".join(f"{k} = ?" for k in fields)
@@ -263,16 +281,20 @@ class Database:
 
     # ---- sessions ----------------------------------------------------------
     def create_session(self, patient_id: int, movement_id: str, reference_id: int | None,
-                       landmark_preset: str, speed_pct: float, threshold_mm: float,
+                       landmark_preset: str, speed_pct: float, threshold_pct: float,
                        reps: int, notes: str = "", **assist) -> int:
+        """New sessions store errors in % of hand size. threshold_mm (NOT NULL in the
+        original schema) gets the mm equivalent, or 0 if the hand size wasn't measured."""
+        hand = assist.get("hand_size_mm")
         cur = self.conn.execute(
             "INSERT INTO sessions(patient_id, movement_id, reference_id, landmark_preset, speed_pct,"
-            " threshold_mm, reps, started_at, notes, hand_size_mm, stall_window_s,"
-            " stall_move_eps_pct, complete_tol_pct, start_grace_s, servo)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (patient_id, movement_id, reference_id, landmark_preset, speed_pct, threshold_mm,
-             reps, _now(), notes, assist.get("hand_size_mm"), assist.get("stall_window_s"),
-             assist.get("stall_move_eps_pct"), assist.get("complete_tol_pct"),
+            " threshold_mm, threshold_pct, err_units, reps, started_at, notes, hand_size_mm,"
+            " stall_window_s, stall_move_eps_pct, complete_tol_move_pct, start_grace_s, servo)"
+            " VALUES (?,?,?,?,?,?,?,'pct',?,?,?,?,?,?,?,?,?)",
+            (patient_id, movement_id, reference_id, landmark_preset, speed_pct,
+             threshold_pct * hand / 100 if hand else 0.0, threshold_pct,
+             reps, _now(), notes, hand, assist.get("stall_window_s"),
+             assist.get("stall_move_eps_pct"), assist.get("complete_tol_move_pct"),
              assist.get("start_grace_s"), assist.get("servo")))
         self.conn.commit()
         return cur.lastrowid
@@ -315,7 +337,7 @@ class Database:
         row = self.conn.execute(
             f"SELECT {cols}, AVG(err_overall) AS err_overall, {over}, {assist}, COUNT(*) AS n "
             "FROM session_frames WHERE session_id = :sid AND hand_detected = 1",
-            {"sid": session_id, "thr": s["threshold_mm"]}).fetchone()
+            {"sid": session_id, "thr": session_threshold(s)}).fetchone()
         return {
             "mean": {f: row[f"err_{f}"] for f in FINGERS},
             "overall": row["err_overall"],

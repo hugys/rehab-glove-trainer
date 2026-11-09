@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ...config import FINGERS
 from .. import theme
+from ..units import fmt_err
 
 # assist state -> (label, colour)
 ASSIST_STYLE = {
@@ -21,17 +22,19 @@ class FingerErrorPanel(QWidget):
     """Horizontal bars + assist chip (clinician) or large traffic-light dots (patient,
     compact=True). Error is diagnostic; the chip shows what the glove is doing."""
 
-    def __init__(self, threshold_mm: float = 10.0, compact: bool = False, parent=None):
+    def __init__(self, threshold: float = 10.0, compact: bool = False, parent=None):
         super().__init__(parent)
-        self.threshold = threshold_mm
+        self.threshold = threshold                # same units as the errors (% of hand size)
+        self.hand_mm: float | None = None         # set to add mm next to the values
         self.compact = compact
         self._err: dict[str, float] | None = None
         self._state: dict[str, str] | None = None
         self.setMinimumHeight(140 if compact else 220)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
-    def set_threshold(self, mm: float):
-        self.threshold = mm
+    def set_threshold(self, threshold: float, hand_mm: float | None = None):
+        self.threshold = threshold
+        self.hand_mm = hand_mm
         self.update()
 
     def set_values(self, err: dict[str, float] | None, assist_state: dict[str, str] | None = None):
@@ -75,7 +78,7 @@ class FingerErrorPanel(QWidget):
 
     def _paint_bars(self, p: QPainter):
         n = len(FINGERS)
-        label_w, value_w, chip_w = 70, 86, 74
+        label_w, value_w, chip_w = 70, (120 if self.hand_mm else 70), 74
         w, h = self.width(), self.height()
         row_h = h / n
         bar_left = label_w
@@ -99,7 +102,7 @@ class FingerErrorPanel(QWidget):
                 p.setBrush(QColor(theme.error_color(e, self.threshold)))
                 p.drawRoundedRect(fill, 4, 4)
             p.setPen(QColor(theme.TEXT))
-            txt = f"{e:.1f} mm" if e is not None else "--"
+            txt = fmt_err(e, self.hand_mm, decimals=0) if e is not None else "--"
             p.drawText(QRectF(bar_left + bar_w + 4, y, value_w - 4, row_h),
                        Qt.AlignVCenter | Qt.AlignRight, txt)
             # assist chip

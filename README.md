@@ -3,10 +3,15 @@
 Desktop app (Python + PySide6) for the vision-based rehab glove. It is built on the team's
 MediaPipe script (not included in this repo; its logic is ported into `rehab_app/engine/`).
 
-- **Reference:** guided **4 s** recordings of the **unaffected** hand. You can record 1–5
-  takes, and their spread forms a tolerance band.
+- **Reference:** guided **4 s** recordings of the **unaffected** hand. 3 takes are averaged
+  into one reference by default (1–5 under **Advanced**).
 - **Live sessions:** the **affected** hand at a speed the clinician picks.
-- **Per-finger error:** distance from the reference, for diagnosis only.
+- **Per-finger error:** distance from the reference, for diagnosis only, in **% of hand
+  size** (wrist crease to middle-finger knuckle, measured by the camera), so no ruler is
+  needed. If the patient's hand size is entered, mm is shown next to it.
+- **Info icons:** every setting or number that may not be obvious has a small **i**. Hover
+  over it or click it for a plain-language explanation. All the texts are in
+  `rehab_app/ui/info_text.py`.
 - **Stall-triggered glove assist:** if a finger stops moving for a time *t* that the
   physician sets, the glove's motor for that finger drives it to the end position.
 - **Video:** every reference take and session repetition is recorded as MP4 and can be
@@ -14,6 +19,12 @@ MediaPipe script (not included in this repo; its logic is ported into `rehab_app
 - **Storage:** SQLite, with CSV export.
 
 ## Run
+
+**Desktop icon (macOS):** run `./make_desktop_app.sh` once. It creates **Rehab Glove
+Trainer.app** on the Desktop, which you double-click to start the app without a Terminal.
+Output goes to `data/launcher.log`. Re-run the script if you move the project folder.
+
+**From a terminal:**
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -36,10 +47,13 @@ Tests: `pip install -r requirements-dev.txt && pytest`
 
 ## Workflow
 
-1. **Patients:** name, affected hand, and **hand size** (wrist crease to middle-finger
-   knuckle, in mm). Tracking works in hand-size units, as in the team script, and the
-   hand size converts them to mm.
-2. **Record reference:** choose the movement and the number of takes (3 recommended). Each
+1. **Patients:** name and affected hand. **Hand size** (wrist crease to middle-finger
+   knuckle, in mm) is optional and sits under **Advanced** with a "measured" checkbox:
+   - Tracking measures everything relative to the hand length the camera sees, as in the
+     team script, so results are in % of hand size.
+   - A measured hand size only adds the mm equivalent.
+2. **Record reference:** choose the movement. The number of takes is under **Advanced**
+   (3 by default). Each
    take is a 3-2-1 countdown followed by exactly 4 s of recording.
    - The healthy hand is wrist-zeroed, scaled to hand size, mirrored, and re-indexed to
      0–100 % progress.
@@ -65,8 +79,13 @@ plus "glove helping" when it is being assisted.
 ## Glove assist (motors)
 
 The script's `StallAssist` is used as-is, per finger:
-- A finger counts as **stopped** if its fingertip has moved less than *X* % of hand size
-  during the last *t* seconds.
+- A finger counts as **stopped** if, during the last *t* seconds, its fingertip moved less
+  than the "not moving" limit, **and** it is more than 5 % of the movement behind where the
+  reference is at that moment.
+  - The limit is *X* % of hand size, lowered automatically at slow speeds to half of what
+    the reference itself moves in *t* (never below 1 % of hand size, about tracking jitter).
+  - Without this, at 25 % speed a patient following the reference perfectly was flagged as
+    stalled on every finger, because the reference itself moves less than *X* % per second.
 - If it is stopped and has not yet reached the final pose of the reference, the finger's
   servo is driven toward that pose until the finger is within the completion tolerance.
 
@@ -75,7 +94,32 @@ The script's `StallAssist` is used as-is, per finger:
 | Stall time *t* | Session setup (per session) | 1.0 s |
 | Start-up grace | Session setup | 2.0 s |
 | "Not moving" threshold | Settings → Glove assist tuning | 4 % of hand size |
-| "Complete" tolerance | Settings → Glove assist tuning | 8 % of hand size |
+| "Complete" tolerance | Settings → Glove assist tuning | 10 % of each finger's own movement |
+| Error threshold | Session setup | 11 % of hand size (≈ 10 mm on a 90 mm hand) |
+
+**"Complete" per finger:** a finger has reached the end position when it is within 10 % of
+*its own* movement in the reference (never less than 2 % of hand size).
+- **Why per finger:** a flat 8 % of hand size was about half of the pinky's movement in a
+  precision grip, but under 7 % of a full fist.
+- **Direction-aware:** going past the end in the movement's direction also counts as done.
+  A fist closed tighter than the reference is never pushed back open.
+- **Fingers that shouldn't move:** if the reference moves a finger by less than 5 % of hand
+  size, that finger must stay within 8 % of hand size of its position, in either direction.
+
+**When a stall triggers:**
+- The app logs **"Servo motor triggered"** in the event list and on the console, with the
+  planned move per finger (e.g. `ring flex (CW) 64°`).
+- `rehab_app/hardware/servo_motion.py` plans the move. It is a placeholder whose numbers need
+  calibrating:
+  - The finger's current position is 0–1 along the patient's own reference.
+  - Degrees = (1 − position) × the movement's share × the finger's full servo travel.
+  - The direction comes from flex vs extend.
+  - `trigger()` is where angle/speed commands go once the firmware accepts them.
+
+**Patient visual:** in a session, the patient view shows the recorded healthy-hand
+reference (mirrored onto the affected side) in place of the generic demo. During a
+repetition it moves in step with the repetition at the chosen speed, and a finger the glove
+is driving glows purple.
 
 **Serial protocol** (from the script): one line per update, `thumb,index,middle,ring,pinky`.
 Each value is `+1` for CW (flex), `-1` for CCW (extend) or `0` for hold, at most 20 Hz. All
@@ -113,6 +157,7 @@ rehab_app/engine/
   interface.py                  the engine contract the UI uses
 rehab_app/workers/engine_worker.py   30 fps thread; owns timing, takes, and MP4 recording
 rehab_app/hardware/servo_link.py     ESP32 serial protocol (off until the glove exists)
+rehab_app/hardware/servo_motion.py   per-finger servo direction + degrees on stall (placeholder numbers)
 rehab_app/data/                 database.py (SQLite + migrations), video.py (MP4), export.py (CSV)
 rehab_app/ui/                   windows, pages, widgets, video player, settings
 ```
@@ -123,5 +168,7 @@ rehab_app/ui/                   windows, pages, widgets, video player, settings
 - Videos: `data/videos/patient_<id>/`. Each repetition's video is the same length as the
   recording, with frames repeated if the camera ran slower, so video time matches the
   logged `t_s`.
-- Session CSVs have per-frame `err_*` (mm), `state_*` and `cmd_*` columns, the same as the
+- Session CSVs have per-frame `err_*`, `state_*` and `cmd_*` columns, the same as the
   script's `session.csv` log.
+  - `err_*` is in the unit given by `err_units` in the header: `pct` = % of hand size.
+  - Sessions recorded before this change are `mm`, and they still display correctly.

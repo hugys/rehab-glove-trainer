@@ -87,7 +87,7 @@ def test_mock_pipeline_and_assist(preset):
         fr = eng.session_frame(i / 30)
         seen |= set((fr.assist_state or {}).values())
     assert "assisting" in seen                # the simulated ring finger stalls
-    assert set(fr.finger_error_mm) == set(FINGERS)
+    assert set(fr.finger_error_pct) == set(FINGERS)
 
 
 def test_session_rejects_other_landmark_set():
@@ -163,3 +163,119 @@ def test_video_recorder_matches_wall_clock(tmp_path):
     cap = cv2.VideoCapture(str(path))
     n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     assert abs(n - 121) <= 1                  # 4 s at 30 fps regardless of camera rate
+
+
+def test_servo_motion_plan():
+    from rehab_app.hardware import servo_motion as sm
+    # close_fist: reach shrinks 1.0 -> 0.5; finger stuck halfway -> flex half the travel
+    m = sm.plan_move("close_fist", "index", 0.75, 1.0, 0.5)
+    assert m.direction == sm.CW and m.position == pytest.approx(0.5)
+    assert m.degrees == pytest.approx(0.5 * sm.SERVO_TRAVEL_DEG["index"])
+    # open_fist: reach grows -> extend; stuck at the start -> full travel
+    m = sm.plan_move("open_fist", "ring", 0.5, 0.5, 1.0)
+    assert m.direction == sm.CCW and m.degrees == pytest.approx(sm.SERVO_TRAVEL_DEG["ring"])
+    # at target -> hold
+    assert sm.plan_move("close_fist", "thumb", 0.5, 1.0, 0.5).direction == sm.HOLD
+    assert "Servo motor triggered" in sm.trigger([m])
+
+
+def test_session_frames_carry_servo_moves():
+    eng = MockEngine(LandmarkSet.from_preset("12"))
+    ref = _record(eng, takes=1)
+    eng.start_session(ref, SessionParams(100, 10, 90, 0.5, 4, 8, start_grace_s=1.0))
+    planned = set()
+    for i in range(121):
+        fr = eng.session_frame(i / 30)
+        moves = fr.servo_moves or {}
+        for f, st in (fr.assist_state or {}).items():
+            assert (st == "assisting") == (f in moves)
+        for f, m in moves.items():
+            assert m.direction == fr.assist_cmd[f] and m.degrees > 0
+            planned.add(f)
+    assert planned                            # the simulated ring finger stalls
+
+
+@pytest.mark.parametrize("speed", [25, 50, 100, 200])
+def test_stall_is_speed_aware(speed):
+    """Keeping pace with a slow reference is not a stall; freezing halfway still is."""
+    ls = LandmarkSet.from_preset("12")
+    geom = tc.Geometry.from_landmark_set(ls)
+    ref = _record(MockEngine(ls), "precision_grip")
+    tips = list(geom.tip_rows)
+    reach = np.linalg.norm(ref.data[:, tips, :], axis=-1)
+    dur = config.session_duration_s(speed)
+    for freeze in (False, True):
+        sa = tc.StallAssist(geom, 1.0, 0.04, 0.08, 2.0, ref_reach=reach, duration_s=dur)
+        seen = set()
+        for k in range(int(dur * 30) + 1):
+            p = k / 30 / dur
+            pose = tc.interp_rows(ref.data, min(p, 0.5) if freeze else p)
+            _, states = sa.update(pose, ref.data[-1], k / 30, p)
+            seen |= set(states)
+        assert ("assisting" in seen) == freeze
+
+
+@pytest.mark.parametrize("speed", [50, 100, 200])
+def test_reference_follows_clinician_speed(speed):
+    """The pose the patient is compared against (and that the patient view shows) is the
+    reference stretched to the session duration set by the speed."""
+    ls = LandmarkSet.from_preset("12")
+    eng = MockEngine(ls)
+    ref = _record(eng)
+    eng.start_session(ref, SessionParams(speed, 10, 90, 1, 4, 8))
+    t = 2.0
+    for i in range(int(t * 30) + 1):
+        fr = eng.session_frame(i / 30)
+    expected = min(1.0, t / config.session_duration_s(speed))
+    assert fr.progress == pytest.approx(100 * expected)
+    assert np.allclose(fr.reference_landmarks,
+                       eng._display(tc.interp_rows(ref.data, expected)), atol=1e-6)
+
+
+def _reach(ref, geom):
+    return np.linalg.norm(ref.data[:, list(geom.tip_rows), :], axis=-1)
+
+
+def test_completion_is_per_finger_and_direction_aware():
+    ls = LandmarkSet.from_preset("12")
+    geom = tc.Geometry.from_landmark_set(ls)
+    ref = _record(MockEngine(ls), "precision_grip")
+    reach = _reach(ref, geom)
+    span = reach[-1] - reach[0]
+    sa = tc.StallAssist(geom, ref_reach=reach, duration_s=4.0, complete_tol_move=0.10)
+    pinky = FINGERS.index("pinky")
+    # A flat 8 % of hand size was about half the pinky's movement in a precision grip
+    assert 0.08 / abs(span[pinky]) > 0.4
+    assert sa.tol[pinky] == pytest.approx(max(tc.COMPLETE_TOL_FLOOR, 0.10 * abs(span[pinky])))
+    # Halfway is not done; past the end in the movement's direction is done (never pushed back)
+    assert not sa._complete(pinky, 0.5 * span[pinky])
+    assert sa._complete(pinky, -0.5 * span[pinky])
+    # A finger the reference doesn't move keeps the absolute tolerance both ways
+    still = tc.StallAssist(geom, ref_reach=np.zeros((101, 5)) + 1.0, duration_s=4.0,
+                           complete_tol_move=0.10, complete_tol=0.08)
+    assert still._complete(0, 0.05) and still._complete(0, -0.05) and not still._complete(0, 0.2)
+
+
+def test_hand_size_optional_and_legacy_mm_sessions(tmp_path):
+    from rehab_app.data.database import session_threshold
+    db = Database(tmp_path / "t.db")
+    pid = db.add_patient("No Ruler", "right")
+    assert db.get_patient(pid)["hand_size_known"] == 0
+    db.update_patient(pid, hand_size_mm=80)
+    assert db.get_patient(pid)["hand_size_known"] == 1
+    db.update_patient(pid, hand_size_mm=None)
+    assert db.get_patient(pid)["hand_size_known"] == 0
+    sid = db.create_session(pid, "open_fist", None, "12", 100, 12.0, 1)
+    s = db.get_session(sid)
+    assert s["err_units"] == "pct" and session_threshold(s) == 12.0 and s["threshold_mm"] == 0
+    # a session from before the change: mm units, threshold in threshold_mm
+    db.conn.execute("UPDATE sessions SET err_units = 'mm', threshold_mm = 10 WHERE id = ?", (sid,))
+    assert session_threshold(db.get_session(sid)) == 10
+
+
+def test_fmt_err():
+    from rehab_app.ui.units import fmt_err
+    assert fmt_err(10.0) == "10.0 %"
+    assert fmt_err(10.0, 90) == "10.0 % (9.0 mm)"
+    assert fmt_err(7.5, 90, "mm") == "7.5 mm"
+    assert fmt_err(None) == fmt_err(float("nan")) == "--"
