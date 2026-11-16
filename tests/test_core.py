@@ -337,9 +337,9 @@ def test_align_rotates_hand_upright():
     assert np.allclose(upright, tc.normalize_pose(pts, geom, False, True))   # already upright
 
 
-def test_real_hand_swaps_mediapipe_label():
+def test_real_hand_keeps_mediapipe_label():
     from rehab_app.engine.mediapipe_engine import real_hand
-    assert real_hand("Left") == "right" and real_hand("Right") == "left"
+    assert real_hand("Left") == "left" and real_hand("Right") == "right"
     assert real_hand(None) is None
 
 

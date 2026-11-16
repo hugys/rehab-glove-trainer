@@ -157,9 +157,11 @@ def rotate_frame(frame, degrees: int):
 
 
 def real_hand(label: str | None) -> str | None:
-    """MediaPipe labels handedness as if the image were a mirrored selfie. Camera frames
-    reach it unmirrored, so its "Left" is the patient's right hand and vice versa."""
-    return {"left": "right", "right": "left"}.get((label or "").lower())
+    """MediaPipe's handedness label -> "left" / "right". Checked with real hands on
+    unmirrored camera frames: the label is the patient's actual hand (swapping it, as the
+    MediaPipe docs suggest for non-selfie images, made every hand come out wrong)."""
+    label = (label or "").lower()
+    return label if label in ("left", "right") else None
 
 
 def request_camera_access() -> None:
