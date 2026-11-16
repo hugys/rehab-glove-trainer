@@ -176,6 +176,7 @@ class PipelineEngine(RehabEngine):
         # References recorded before hands were rotated upright are compared unrotated
         self._align = bool(reference.meta.get("aligned", False))
         self._axis = tc.MovementAxis(reference.data, self.geom)
+        self._best = np.zeros(len(FINGERS))        # furthest each finger got this repetition
         self._target = reference.data[-1]          # fully completed pose of the exercise
         self._reach_start, self._reach_end = ref_reach[0], ref_reach[-1]
         self._last = {}
@@ -194,7 +195,12 @@ class PipelineEngine(RehabEngine):
                 # live hand: no mirror
                 pose = tc.normalize_pose(m.new_pts21, self.geom, False, True, align=self._align)
                 ref_pose = tc.interp_rows(self._ref.data, p)
-                err, completion = self._axis.errors(ref_pose, pose)
+                # error = the part of the movement not reached so far (timing doesn't count:
+                # fully stretched when opening a fist = 0 %, halfway = 50 %)
+                completion = self._axis.completion(pose)
+                self._best = np.fmax(self._best, np.clip(completion, 0.0, 1.0))
+                err = np.where(self._axis.moving, 1.0 - self._best, self._axis.drift(pose))
+                completion = np.where(self._axis.moving, self._best, np.nan)
                 cmds, states = self._assist.update(pose, self._target, m.new_t, p)
                 err_pct = {f: float(e * 100.0) for f, e in zip(FINGERS, err)}
                 reach = np.linalg.norm(pose[list(self.geom.tip_rows)], axis=1)

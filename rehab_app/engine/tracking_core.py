@@ -9,8 +9,8 @@ engine share exactly the same pipeline:
   SESSION   : progress = elapsed / duration (duration from clinician speed)
               ERROR  (diagnostic): per finger, along the movement's own axis
                                    (0 % = start pose, 100 % = end pose of the
-                                   reference): how far the patient is from where
-                                   the reference is at the same progress
+                                   reference): the part of the movement the
+                                   patient has not reached, whatever the timing
               ASSIST (drives motors): StallAssist - finger has not moved for
                                    `stall_window_s` and is not at the target yet
 
@@ -154,43 +154,43 @@ def build_reference(takes: list[np.ndarray], geom: Geometry):
 class MovementAxis:
     """Per finger, the straight line from the reference's start pose to its end pose
     (all of the finger's tracked points together). Positions along it are the finger's
-    completion: 0 = start, 1 = end (e.g. fully stretched when opening a fist).
+    completion: 0 = start, 1 = end (e.g. fully stretched when opening a fist). Only this
+    one axis counts; sideways deviation is ignored.
 
-    errors(ref_pose, cur_pose) -> (err (5,), completion (5,))
-      err        : |reference completion - patient completion|, as a fraction of the
-                   movement. Only this one axis counts; sideways deviation is ignored.
-      completion : patient completion 0-1 (NaN for fingers that should stay still).
-    Fingers the reference barely moves (< MIN_AXIS_SPAN) have no axis: their error is the
-    distance from the reference pose relative to STILL_ERR_SCALE.
+    Image plane only (x, y): MediaPipe's depth is far too noisy for this. Replaying real
+    recordings, a closed fist read as ~50 % open with depth included and ~0-20 % without.
+
+    completion(pose) -> (5,) 0-1 along the movement, NaN for still fingers
+    drift(pose)      -> (5,) for fingers the reference barely moves (< MIN_AXIS_SPAN): how far
+                        the finger is from the little path the reference takes (anywhere
+                        between its start and end pose, so timing doesn't count), relative
+                        to STILL_ERR_SCALE; NaN for moving fingers
     """
 
     def __init__(self, ref_data: np.ndarray, geom: Geometry):
         self.geom = geom
         self._rows = [list(r) for r in geom.finger_rows]
-        dims = slice(None) if USE_Z else slice(0, 2)
-        self._dims = dims
-        self._start = [ref_data[0, r, dims].ravel() for r in self._rows]
-        vec = [ref_data[-1, r, dims].ravel() - st for r, st in zip(self._rows, self._start)]
-        self.span = np.array([np.linalg.norm(v) for v in vec])
-        self._vec = vec
+        self._start = [ref_data[0, r, :2].ravel() for r in self._rows]
+        self._vec = [ref_data[-1, r, :2].ravel() - st for r, st in zip(self._rows, self._start)]
+        self.span = np.array([np.linalg.norm(v) for v in self._vec])
         self.moving = self.span >= MIN_AXIS_SPAN
 
     def completion(self, pose: np.ndarray) -> np.ndarray:
         out = np.full(len(self._rows), np.nan)
         for i, (r, st, v) in enumerate(zip(self._rows, self._start, self._vec)):
             if self.moving[i]:
-                out[i] = float(np.dot(pose[r, self._dims].ravel() - st, v) / self.span[i] ** 2)
+                out[i] = float(np.dot(pose[r, :2].ravel() - st, v) / self.span[i] ** 2)
         return out
 
-    def errors(self, ref_pose: np.ndarray, cur_pose: np.ndarray):
-        c_ref = np.clip(self.completion(ref_pose), 0.0, 1.0)
-        c_cur = np.clip(self.completion(cur_pose), 0.0, 1.0)
-        err = np.abs(c_ref - c_cur)
-        for i, r in enumerate(self._rows):
+    def drift(self, pose: np.ndarray) -> np.ndarray:
+        out = np.full(len(self._rows), np.nan)
+        for i, (r, st, v) in enumerate(zip(self._rows, self._start, self._vec)):
             if not self.moving[i]:
-                d = cur_pose[r, self._dims] - ref_pose[r, self._dims]
-                err[i] = float(np.linalg.norm(d, axis=-1).mean()) / STILL_ERR_SCALE
-        return err, c_cur
+                d = pose[r, :2].ravel() - st
+                t = np.clip(np.dot(d, v) / max(self.span[i] ** 2, 1e-12), 0.0, 1.0)
+                off = (d - t * v).reshape(-1, 2)            # per tracked point of the finger
+                out[i] = float(np.linalg.norm(off, axis=1).mean()) / STILL_ERR_SCALE
+        return out
 
 
 def finger_errors(ref_pose: np.ndarray, cur_pose: np.ndarray, geom: Geometry):

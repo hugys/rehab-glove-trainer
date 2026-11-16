@@ -92,9 +92,9 @@ class SessionSetupPage(Page):
         thr_row.addWidget(self.threshold)
         thr_row.addWidget(self.threshold_mm, 1)
         form.addRow(with_info("Error threshold", "threshold"), thr_row)
-        form.addRow("", muted("Diagnostic: how far a finger may be behind or ahead of the "
-                              "reference along the movement (0 % = start, 100 % = end) before "
-                              "it is flagged red and counted in the results."))
+        form.addRow("", muted("Diagnostic: how much of the movement a finger may still be "
+                              "missing at the end of a repetition before it is flagged red "
+                              "and counted in the results."))
 
         assist_form = QFormLayout()
         assist_form.setVerticalSpacing(12)
@@ -183,8 +183,8 @@ class SessionSetupPage(Page):
 
     def _threshold_changed(self):
         v = self.threshold.value()
-        self.threshold_mm.setText(f"e.g. opening a fist: a finger more than {v:.0f} % of the "
-                                  f"way off where the reference finger is")
+        self.threshold_mm.setText(f"e.g. opening a fist: a finger must get at least "
+                                  f"{100 - v:.0f} % of the way open")
 
     def _speed_changed(self):
         v = self.speed.value()

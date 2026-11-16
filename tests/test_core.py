@@ -294,24 +294,18 @@ def _axis_setup():
     return geom, data, rows, start, end
 
 
-def test_error_is_along_the_movement_axis():
+def test_completion_is_along_the_movement_axis():
     geom, data, rows, start, end = _axis_setup()
     axis = tc.MovementAxis(data, geom)
     i = 1
     assert axis.moving[i] and not axis.moving[0]      # thumb doesn't move: no axis
-    ref_end = data[-1]
-    cur = ref_end.copy()
-    err, comp = axis.errors(ref_end, cur)
-    assert err[i] == pytest.approx(0) and comp[i] == pytest.approx(1)   # fully stretched
-    cur[rows] = start + (end - start) * 0.75          # three quarters open
-    err, comp = axis.errors(ref_end, cur)
-    assert err[i] == pytest.approx(0.25) and comp[i] == pytest.approx(0.75)
-    cur[rows] += np.array([0.3, 0.0, 0.0])            # sideways only: not counted
-    err, _ = axis.errors(ref_end, cur)
-    assert err[i] == pytest.approx(0.25)
-    halfway = data[tc.N_PROGRESS // 2]                # reference halfway, patient halfway
-    err, _ = axis.errors(halfway, halfway.copy())
-    assert err[i] == pytest.approx(0)
+    cur = data[-1].copy()
+    assert axis.completion(cur)[i] == pytest.approx(1)          # fully stretched
+    cur[rows] = start + (end - start) * 0.5           # halfway open
+    assert axis.completion(cur)[i] == pytest.approx(0.5)
+    cur[rows] += np.array([0.3, 0.0, 0.7])            # sideways / depth: not counted
+    assert axis.completion(cur)[i] == pytest.approx(0.5)
+    assert np.isnan(axis.completion(cur)[0])
 
 
 def test_still_finger_error_is_scaled_drift():
@@ -319,8 +313,66 @@ def test_still_finger_error_is_scaled_drift():
     axis = tc.MovementAxis(data, geom)
     cur = data[-1].copy()
     cur[list(geom.finger_rows[0])] += np.array([tc.STILL_ERR_SCALE, 0, 0])   # thumb drifts
-    err, comp = axis.errors(data[-1], cur)
-    assert err[0] == pytest.approx(1.0) and np.isnan(comp[0])
+    drift = axis.drift(cur)
+    assert drift[0] == pytest.approx(1.0) and np.isnan(drift[1])
+
+
+def test_error_is_the_part_of_the_movement_not_reached(tmp_path):
+    """Halfway open = 50 % error, fully open = 0 %, whatever the timing; a repetition's
+    error is what is left at its end."""
+    from rehab_app.engine.pipeline import Measurement, PipelineEngine
+    ls = LandmarkSet.from_preset("12")
+
+    class Scripted(PipelineEngine):
+        flex = 1.0
+        other_hand = False                              # the reference is the opposite hand
+        def open_camera(self, source=None): pass
+        def close_camera(self): pass
+        def _measure(self, elapsed_s):
+            from rehab_app.engine.mock_engine import hand_pose21
+            px = hand_pose21({f: self.flex for f in FINGERS})
+            px[:, 1] *= -1                              # image y-down
+            if self.other_hand:
+                px[:, 0] *= -1
+            return Measurement(image=None, detected=True, overlay_px=px[:, :2], confidence=1.0,
+                               hand="left", new_pts21=px, new_t=elapsed_s)
+
+    eng = Scripted(ls)
+    eng.other_hand = True
+    eng.start_reference("open_fist", 4.0, "right", 90.0)
+    eng.start_take(0)
+    for i in range(121):
+        eng.flex = 1.0 - i / 120                        # fist -> open
+        eng.reference_frame(i / 30)
+    eng.end_take()
+    ref = eng.finish_reference()
+    eng.other_hand = False
+
+    def rep(flexes):
+        eng.start_session(ref, SessionParams(100, 15, None, 1.0, 4.0, 10.0))
+        for i, eng.flex in enumerate(flexes):
+            fr = eng.session_frame(4.0 * i / len(flexes))
+        return fr
+    fr = rep([1.0] * 30)                                # never opens
+    assert fr.finger_error_pct["index"] > 90
+    fr = rep([1.0] * 20 + [0.0] * 10)                   # late, but fully open
+    assert fr.finger_error_pct["index"] < 5 and fr.overall_error_pct < 5
+    fr = rep([1.0] * 5 + [0.0] * 5 + [1.0] * 20)        # opened fully, then closed again
+    assert fr.finger_error_pct["index"] < 5             # the furthest point counts
+    half = rep([1.0] * 10 + [0.5] * 20)                 # opens only part of the way
+    assert 20 < half.finger_error_pct["index"] < 80
+
+    db = Database(tmp_path / "t.db")
+    pid = db.add_patient("A", "left")
+    sid = db.create_session(pid, "open_fist", None, "12", 100, 15, 2)
+    def row(rep_no, t, e):
+        return (rep_no, t, 25 * t, 1.0, 1, e, e, e, e, e, e, 0, *["moving"] * 5, *[0] * 5, "left")
+    db.add_frames(sid, [row(1, 0, 100), row(1, 2, 60), row(1, 4, 10),     # ends at 10 %
+                        row(2, 0, 100), row(2, 4, 50)])                    # ends at 50 %
+    summ = db.session_summary(sid)
+    assert summ["mean"]["index"] == pytest.approx(30) and summ["overall"] == pytest.approx(30)
+    assert summ["pct_over"]["index"] == pytest.approx(50)          # 1 of 2 reps above 15 %
+    assert db.list_sessions(pid)[0]["mean_err"] == pytest.approx(30)
 
 
 def test_align_rotates_hand_upright():

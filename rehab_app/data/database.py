@@ -110,6 +110,11 @@ FRAME_INSERT_COLS = ["rep", "t_s", "progress", "confidence", "hand_detected", *E
                      "err_overall", "corr_mask", *STATE_COLS, *CMD_COLS, "hand"]
 
 
+# the last frame of each repetition (frames alias f)
+LAST_FRAME = ("f.t_s = (SELECT MAX(t_s) FROM session_frames l WHERE l.session_id = f.session_id"
+              " AND l.rep = f.rep)")
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -317,7 +322,8 @@ class Database:
     def list_sessions(self, patient_id: int) -> list[sqlite3.Row]:
         return self.conn.execute(
             "SELECT s.*, "
-            " (SELECT AVG(err_overall) FROM session_frames f WHERE f.session_id = s.id) AS mean_err,"
+            " (SELECT AVG(err_overall) FROM session_frames f WHERE f.session_id = s.id"
+            f"   AND (s.err_units != 'move' OR {LAST_FRAME})) AS mean_err,"
             " (SELECT COUNT(DISTINCT rep) FROM session_frames f WHERE f.session_id = s.id) AS reps_done"
             " FROM sessions s WHERE patient_id = ? ORDER BY s.id DESC", (patient_id,)).fetchall()
 
@@ -330,21 +336,28 @@ class Database:
             (session_id,)).fetchall()
 
     def session_summary(self, session_id: int) -> dict:
-        """Mean error per finger, % of tracked frames above threshold, % of frames assisted."""
+        """Mean error per finger, % above threshold, % of frames assisted.
+
+        err_units 'move': a repetition's error is what was still missing at its end (its
+        last frame), so mean = average over repetitions and "above threshold" = share of
+        repetitions that ended above it. Older units: averages over all tracked frames."""
         s = self.get_session(session_id)
+        per_rep = f" AND {LAST_FRAME}" if s["err_units"] == "move" else ""
         cols = ", ".join(f"AVG({c}) AS {c}" for c in ERR_COLS)
         over = ", ".join(f"AVG(CASE WHEN {c} > :thr THEN 1.0 ELSE 0.0 END) AS over_{c}"
                          for c in ERR_COLS)
         assist = ", ".join(f"AVG(CASE WHEN state_{f} = 'assisting' THEN 1.0 ELSE 0.0 END) AS as_{f}"
                            for f in FINGERS)
-        row = self.conn.execute(
-            f"SELECT {cols}, AVG(err_overall) AS err_overall, {over}, {assist}, COUNT(*) AS n "
-            "FROM session_frames WHERE session_id = :sid AND hand_detected = 1",
-            {"sid": session_id, "thr": session_threshold(s)}).fetchone()
+        args = {"sid": session_id, "thr": session_threshold(s)}
+        where = "FROM session_frames f WHERE session_id = :sid AND hand_detected = 1"
+        err = self.conn.execute(
+            f"SELECT {cols}, AVG(err_overall) AS err_overall, {over} {where}{per_rep}",
+            args).fetchone()
+        row = self.conn.execute(f"SELECT {assist}, COUNT(*) AS n {where}", args).fetchone()
         return {
-            "mean": {f: row[f"err_{f}"] for f in FINGERS},
-            "overall": row["err_overall"],
-            "pct_over": {f: (row[f"over_err_{f}"] or 0) * 100 for f in FINGERS},
+            "mean": {f: err[f"err_{f}"] for f in FINGERS},
+            "overall": err["err_overall"],
+            "pct_over": {f: (err[f"over_err_{f}"] or 0) * 100 for f in FINGERS},
             "pct_assist": {f: (row[f"as_{f}"] or 0) * 100 for f in FINGERS},
             "n_frames": row["n"],
         }

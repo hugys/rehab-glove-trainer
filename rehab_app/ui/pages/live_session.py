@@ -91,7 +91,7 @@ class LiveSessionPage(Page):
         stats_card.layout().addLayout(stats)
         stats_card.layout().addWidget(self.servo_status)
         right.addWidget(stats_card)
-        legend = muted(f"Bars = how far behind/ahead of the reference, % of movement · "
+        legend = muted(f"Bars = part of the movement still missing · "
                        f"<span style='color:{theme.ASSIST}'><b>ASSIST</b></span> = finger stalled, "
                        f"glove driving it")
         legend.setWordWrap(False)
@@ -278,8 +278,8 @@ class LiveSessionPage(Page):
                         f"hand, the session needs the {self.ctx.affected_hand()} hand", theme.BAD)
         if frame.overall_error_pct is not None:
             self.v_err.setText(fmt_err(frame.overall_error_pct, units="move"))
-            self._rep_err_sum += frame.overall_error_pct
-            self._rep_err_n += 1
+            # the error only shrinks as the fingers get further: the last value is the rep's
+            self._rep_err_sum, self._rep_err_n = frame.overall_error_pct, 1
         states = frame.assist_state or {}
         moves = frame.servo_moves or {}
         triggered = [f for f, st in states.items()
@@ -324,7 +324,7 @@ class LiveSessionPage(Page):
         assisted = ", ".join(sorted(self._rep_assisted, key=FINGERS.index)) or "none"
         hand = self._tally.label(self.ctx.affected_hand())
         color = theme.BAD if hand.startswith("⚠") else None
-        self._event(f"{'▶ ' if video else ''}Rep {self.rep} ({hand}): mean error "
+        self._event(f"{'▶ ' if video else ''}Rep {self.rep} ({hand}): error "
                     f"{fmt_err(mean, units='move')} of movement · "
                     f"assisted: {assisted}", color, video=video or None)
         self.v_rep.setText(f"{self.rep} / {self.reps}")

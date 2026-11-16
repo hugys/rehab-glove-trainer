@@ -8,9 +8,9 @@ MediaPipe script (not included in this repo; its logic is ported into `rehab_app
 - **Live sessions:** the **affected** hand at a speed the clinician picks.
 - **Per-finger error:** for diagnosis only, measured along one axis: the movement itself.
   0 % = the finger's start pose in the reference, 100 % = its end pose (opening a fist:
-  fully stretched). The error is how far the patient's finger is from the reference's
-  position at the same moment, in **% of the movement**. Hands are rotated upright before
-  comparing, so a tilted hand does not count as error.
+  fully stretched). The error is the part of that movement the finger did not reach, in
+  **% of the movement** (halfway open = 50 %); timing does not count. Hands are rotated
+  upright before comparing, so a tilted hand does not count as error.
 - **Which hand:** every screen names the hand (e.g. "unaffected (right) hand"). The camera
   view shows the hand it sees and a red **Wrong hand** banner if it is not the expected
   one; the hand actually recorded is stored for every take and repetition.

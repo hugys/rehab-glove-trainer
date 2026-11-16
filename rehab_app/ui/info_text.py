@@ -26,9 +26,9 @@ INFO: dict[str, str] = {
         "affected hand cannot keep up; raise it over the weeks as a measure of progress."),
     "reps": "<b>Repetitions</b><br>How many times the movement is performed in this session.",
     "threshold": (
-        "<b>Error threshold</b><br>A finger whose error is above this is shown red and counted "
-        "in “time above threshold” in the results.<br><br>For assessment only: it never moves "
-        "the glove. In % of the movement (0 % = start pose, 100 % = end pose)."),
+        "<b>Error threshold</b><br>A finger that is still missing more than this share of the "
+        "movement is shown red; repetitions that end that way are counted as “above "
+        "threshold” in the results.<br><br>For assessment only: it never moves the glove."),
     "stall_time": (
         "<b>Stall time t</b><br>How long a finger may stop before the glove motor for that "
         "finger takes over and moves it to the end position.<br><br>A finger only counts as "
@@ -53,14 +53,14 @@ INFO: dict[str, str] = {
     "error": (
         "<b>Error</b><br>Measured along one axis only: the movement itself. For each finger, "
         "0 % is where it starts in the healthy-hand reference and 100 % where it ends (for "
-        "opening a fist: fully stretched = 100 %). The error is how far the patient's finger "
-        "is from where the reference finger is at the same moment, in % of that movement. "
-        "Sideways wobble does not count.<br><br>Example: the reference is fully open, the "
-        "patient's finger is three quarters open → 25 % error. Fully stretched at the end → "
-        "0 %.<br><br>Fingers the reference keeps still (e.g. the curled fingers when pointing) "
-        "have no movement to measure along: for them, 100 % means drifting a quarter of the "
-        "hand length away from the reference.<br><br>For assessment only: the glove is driven "
-        "by stalls, not by error."),
+        "opening a fist: fully stretched = 100 %). The error is the part of that movement the "
+        "finger did not reach. Timing and sideways wobble do not count.<br><br>Example: a "
+        "finger that only opens halfway → 50 % error. Fully stretched → 0 %. During a "
+        "repetition the bar starts at 100 % and shrinks as the finger gets further; what is "
+        "left at the end is the repetition's error.<br><br>Fingers the reference keeps still "
+        "(e.g. the curled fingers when pointing) have no movement to measure along: for them, "
+        "100 % means being a quarter of the hand length away from where the reference keeps them."
+        "<br><br>For assessment only: the glove is driven by stalls, not by error."),
     "mean_error": (
         "<b>Mean error</b><br>Average error of the five fingers, in % of the movement. "
         "Sessions recorded before this change were measured in % of hand size and are "
@@ -81,8 +81,9 @@ INFO: dict[str, str] = {
         "<b>Range of motion</b><br>How far each fingertip travelled towards or away from the "
         "wrist during the reference."),
     "time_above": (
-        "<b>Time above threshold</b><br>Share of the tracked time in which the finger's error "
-        "was above the session's threshold."),
+        "<b>Above threshold</b><br>Share of the repetitions in which the finger ended with "
+        "more of the movement missing than the session's threshold. (Sessions recorded in "
+        "the older units: share of the tracked time above the threshold.)"),
     "time_assist": (
         "<b>Time glove assisting</b><br>Share of the tracked time in which the glove was moving "
         "the finger because it had stalled."),

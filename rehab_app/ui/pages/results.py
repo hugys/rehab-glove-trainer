@@ -41,10 +41,10 @@ class ResultsPage(Page):
         self.trend_plot.showGrid(y=True, alpha=0.2)
 
         self.table = QTableWidget(len(FINGERS), 4)
-        self.table.setHorizontalHeaderLabels(["Finger", "Mean error", "Time above threshold",
+        self.table.setHorizontalHeaderLabels(["Finger", "Mean error", "Above threshold",
                                               "Time glove assisting"])
         header_info(self.table, 1, "Mean error", "error")
-        header_info(self.table, 2, "Time above threshold", "time_above")
+        header_info(self.table, 2, "Above threshold", "time_above")
         header_info(self.table, 3, "Time glove assisting", "time_assist")
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().hide()
@@ -64,7 +64,8 @@ class ResultsPage(Page):
         sel.addWidget(button("← Back to patient", slot=lambda: self.navigate("home")))
 
         plots = QHBoxLayout()
-        plots.addWidget(card(self.curve_plot, muted("Mean across repetitions. Dashed line = threshold."),
+        plots.addWidget(card(self.curve_plot, muted("Part of the movement still missing, mean across repetitions. "
+                                   "Dashed line = threshold."),
                              title="Error through the movement", info="error"), 1)
         plots.addWidget(card(self.trend_plot, muted("Mean error per session of this movement "
                                                     "(lower = closer to the reference)."),

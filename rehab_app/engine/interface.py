@@ -11,8 +11,9 @@ Conventions
 * Landmarks in a FrameResult are in **millimetres in a y-up display frame**
   (wrist at origin, fingers point +y), for drawing. Errors are in **% of the
   movement**: per finger, 0 % = the reference's start pose, 100 % = its end pose,
-  and the error is how far the patient's finger is from the reference's position
-  on that axis at the same progress.
+  and the error is the part of that movement the finger has not reached so far in
+  the repetition (fully there = 0 %, halfway = 50 %), regardless of timing. The
+  last frame of a repetition therefore carries the repetition's result.
 * `hand` is the hand the camera sees ("left" / "right", the patient's real hand),
   smoothed over the last results; None while unsure. The UI compares it with the
   hand the step needs and shows "Wrong hand".
