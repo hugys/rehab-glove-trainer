@@ -28,7 +28,7 @@ INFO: dict[str, str] = {
     "threshold": (
         "<b>Error threshold</b><br>A finger whose error is above this is shown red and counted "
         "in “time above threshold” in the results.<br><br>For assessment only: it never moves "
-        "the glove. In % of hand size (10 % ≈ 9 mm on a 90 mm hand)."),
+        "the glove. In % of the movement (0 % = start pose, 100 % = end pose)."),
     "stall_time": (
         "<b>Stall time t</b><br>How long a finger may stop before the glove motor for that "
         "finger takes over and moves it to the end position.<br><br>A finger only counts as "
@@ -51,14 +51,20 @@ INFO: dict[str, str] = {
         "2 % for the pinky in a precision grip. Fingers that should stay still during a "
         "movement must stay within 8 % of hand size."),
     "error": (
-        "<b>Error</b><br>Distance between the patient's finger and the healthy-hand reference "
-        "at the same point of the movement, averaged over the tracked points of that finger. "
-        "In % of hand size (mm in brackets if the hand size was entered). 0 = identical to "
-        "the reference.<br><br>For assessment only: the glove is driven by stalls, not by "
-        "error."),
+        "<b>Error</b><br>Measured along one axis only: the movement itself. For each finger, "
+        "0 % is where it starts in the healthy-hand reference and 100 % where it ends (for "
+        "opening a fist: fully stretched = 100 %). The error is how far the patient's finger "
+        "is from where the reference finger is at the same moment, in % of that movement. "
+        "Sideways wobble does not count.<br><br>Example: the reference is fully open, the "
+        "patient's finger is three quarters open → 25 % error. Fully stretched at the end → "
+        "0 %.<br><br>Fingers the reference keeps still (e.g. the curled fingers when pointing) "
+        "have no movement to measure along: for them, 100 % means drifting a quarter of the "
+        "hand length away from the reference.<br><br>For assessment only: the glove is driven "
+        "by stalls, not by error."),
     "mean_error": (
-        "<b>Mean error</b><br>Average error of the five fingers, in % of hand size (mm in "
-        "brackets if the hand size was entered)."),
+        "<b>Mean error</b><br>Average error of the five fingers, in % of the movement. "
+        "Sessions recorded before this change were measured in % of hand size and are "
+        "labelled that way in the results."),
     "confidence": (
         "<b>Tracking confidence</b><br>How sure the camera's hand tracker is that it sees a "
         "hand, 0-100 %. Below about 80 % the measurements become unreliable: improve the "

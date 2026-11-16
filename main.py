@@ -70,6 +70,10 @@ def main(argv=None) -> int:
         source = args.camera
     else:
         source = camera_source_from_settings(db)
+    if engine_kind == "mediapipe" and not isinstance(source, str):
+        # must run on the main thread so macOS can show the camera-permission prompt
+        from rehab_app.engine.mediapipe_engine import request_camera_access
+        request_camera_access()
     worker = EngineWorker(engine, camera_source=source)
 
     servo = NullServoLink()
@@ -84,6 +88,7 @@ def main(argv=None) -> int:
                      landmark_set=landmark_set, servo=servo)
     ctx.patient_display = PatientDisplay(landmark_set)
     ctx.patient_display.camera.mirror = ctx.mirror_preview()
+    engine.rotation = ctx.camera_rotation()
     worker.start()
 
     win = MainWindow(ctx)

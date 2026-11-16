@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayo
 from ... import config
 from ...config import MOVEMENTS
 from ...engine.interface import SessionParams
+from ..hands import hand_phrase
 from ..widgets import MovementDemo, ReferenceHandView, with_info
 from .base import Page, button, card, heading, muted
 
@@ -44,9 +45,9 @@ class SessionSetupPage(Page):
         self.speed_label.setObjectName("h2")
         self.duration_label = muted("")
 
-        self.threshold = _spin(1, 50, 0.5, db.get_float("last_threshold_pct",
-                                                        config.THRESHOLD_DEFAULT_PCT),
-                               " % of hand size")
+        self.threshold = _spin(1, 100, 1, db.get_float("last_threshold_move_pct",
+                                                       config.THRESHOLD_DEFAULT_PCT),
+                               " % of movement", decimals=0)
         self.threshold_mm = muted("")
         self.threshold.valueChanged.connect(self._threshold_changed)
         self.reps = QSpinBox()
@@ -80,6 +81,8 @@ class SessionSetupPage(Page):
         speed_row.addWidget(self.speed_label)
         form = QFormLayout()
         form.setVerticalSpacing(12)
+        self.hand_info = QLabel()
+        form.addRow("Hand", self.hand_info)
         form.addRow("Movement", self.movement)
         form.addRow("", self.ref_info)
         form.addRow(with_info("Speed", "speed"), speed_row)
@@ -89,8 +92,9 @@ class SessionSetupPage(Page):
         thr_row.addWidget(self.threshold)
         thr_row.addWidget(self.threshold_mm, 1)
         form.addRow(with_info("Error threshold", "threshold"), thr_row)
-        form.addRow("", muted("Diagnostic: per-finger distance from the reference that is "
-                              "flagged red and counted in the results."))
+        form.addRow("", muted("Diagnostic: how far a finger may be behind or ahead of the "
+                              "reference along the movement (0 % = start, 100 % = end) before "
+                              "it is flagged red and counted in the results."))
 
         assist_form = QFormLayout()
         assist_form.setVerticalSpacing(12)
@@ -131,6 +135,9 @@ class SessionSetupPage(Page):
         self._speed_changed()
 
     def on_enter(self, movement_id: str | None = None, **kwargs):
+        self.hand_info.setText(
+            f"<b>{hand_phrase('affected', self.ctx.affected_hand())}</b> follows the reference "
+            f"of the {hand_phrase('unaffected', self.ctx.healthy_hand())}")
         self._status = self.ctx.db.reference_status(self.ctx.patient_id, self.ctx.landmark_set)
         self.movement.blockSignals(True)
         self.movement.clear()
@@ -175,10 +182,9 @@ class SessionSetupPage(Page):
             self.ref_info.setText("Record a reference for this movement first.")
 
     def _threshold_changed(self):
-        hand = self.ctx.hand_size_mm()
         v = self.threshold.value()
-        self.threshold_mm.setText(f"≈ {v * hand / 100:.1f} mm on this patient's hand" if hand
-                                  else "(≈ 9 mm per 10 % on an average 90 mm hand)")
+        self.threshold_mm.setText(f"e.g. opening a fist: a finger more than {v:.0f} % of the "
+                                  f"way off where the reference finger is")
 
     def _speed_changed(self):
         v = self.speed.value()
@@ -202,7 +208,7 @@ class SessionSetupPage(Page):
             complete_tol_move_pct=db.get_float("complete_tol_move_pct",
                                                config.COMPLETE_TOL_MOVE_PCT),
             start_grace_s=self.grace.value())
-        for k, v in (("last_speed_pct", params.speed_pct), ("last_threshold_pct", params.threshold_pct),
+        for k, v in (("last_speed_pct", params.speed_pct), ("last_threshold_move_pct", params.threshold_pct),
                      ("last_reps", self.reps.value()), ("last_stall_s", params.stall_window_s),
                      ("last_grace_s", params.start_grace_s)):
             db.set_setting(k, str(v))

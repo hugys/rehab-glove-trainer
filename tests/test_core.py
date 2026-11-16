@@ -119,9 +119,10 @@ def test_database_roundtrip(tmp_path):
 
     sid = db.create_session(pid, "open_fist", rid, "15", 50, 10, 2, stall_window_s=1.5)
     row = (1, 0.5, 10.0, 0.9, 1, 5, 6, 7, 15, 12, 9, 0b11000,
-           "done", "moving", "moving", "assisting", "idle", 0, 0, 0, 1, 0)
+           "done", "moving", "moving", "assisting", "idle", 0, 0, 0, 1, 0, "left")
     assert len(row) == len(FRAME_INSERT_COLS)
-    db.add_frames(sid, [row] * 4)
+    db.add_frames(sid, [row] * 3 + [row[:-1] + ("right",)])
+    assert db.rep_hands(sid) == {1: "left"}           # majority of the rep
     summ = db.session_summary(sid)
     assert summ["mean"]["ring"] == pytest.approx(15)
     assert summ["pct_over"]["ring"] == pytest.approx(100)
@@ -267,7 +268,7 @@ def test_hand_size_optional_and_legacy_mm_sessions(tmp_path):
     assert db.get_patient(pid)["hand_size_known"] == 0
     sid = db.create_session(pid, "open_fist", None, "12", 100, 12.0, 1)
     s = db.get_session(sid)
-    assert s["err_units"] == "pct" and session_threshold(s) == 12.0 and s["threshold_mm"] == 0
+    assert s["err_units"] == "move" and session_threshold(s) == 12.0 and s["threshold_mm"] == 0
     # a session from before the change: mm units, threshold in threshold_mm
     db.conn.execute("UPDATE sessions SET err_units = 'mm', threshold_mm = 10 WHERE id = ?", (sid,))
     assert session_threshold(db.get_session(sid)) == 10
@@ -279,3 +280,88 @@ def test_fmt_err():
     assert fmt_err(10.0, 90) == "10.0 % (9.0 mm)"
     assert fmt_err(7.5, 90, "mm") == "7.5 mm"
     assert fmt_err(None) == fmt_err(float("nan")) == "--"
+    assert fmt_err(25.0, 90, "move") == "25.0 %"       # % of movement: no mm
+
+
+def _axis_setup():
+    """Reference that opens one finger along a straight line: start curled, end stretched."""
+    geom = tc.Geometry.from_landmark_set(LandmarkSet.from_preset("12"))
+    data = np.zeros((tc.N_PROGRESS, 12, 3))
+    start, end = np.array([0.0, -0.5, 0.0]), np.array([0.0, -1.5, 0.0])
+    rows = list(geom.finger_rows[1])                  # index finger
+    for k, t in enumerate(np.linspace(0, 1, tc.N_PROGRESS)):
+        data[k, rows] = start + (end - start) * t
+    return geom, data, rows, start, end
+
+
+def test_error_is_along_the_movement_axis():
+    geom, data, rows, start, end = _axis_setup()
+    axis = tc.MovementAxis(data, geom)
+    i = 1
+    assert axis.moving[i] and not axis.moving[0]      # thumb doesn't move: no axis
+    ref_end = data[-1]
+    cur = ref_end.copy()
+    err, comp = axis.errors(ref_end, cur)
+    assert err[i] == pytest.approx(0) and comp[i] == pytest.approx(1)   # fully stretched
+    cur[rows] = start + (end - start) * 0.75          # three quarters open
+    err, comp = axis.errors(ref_end, cur)
+    assert err[i] == pytest.approx(0.25) and comp[i] == pytest.approx(0.75)
+    cur[rows] += np.array([0.3, 0.0, 0.0])            # sideways only: not counted
+    err, _ = axis.errors(ref_end, cur)
+    assert err[i] == pytest.approx(0.25)
+    halfway = data[tc.N_PROGRESS // 2]                # reference halfway, patient halfway
+    err, _ = axis.errors(halfway, halfway.copy())
+    assert err[i] == pytest.approx(0)
+
+
+def test_still_finger_error_is_scaled_drift():
+    geom, data, *_ = _axis_setup()
+    axis = tc.MovementAxis(data, geom)
+    cur = data[-1].copy()
+    cur[list(geom.finger_rows[0])] += np.array([tc.STILL_ERR_SCALE, 0, 0])   # thumb drifts
+    err, comp = axis.errors(data[-1], cur)
+    assert err[0] == pytest.approx(1.0) and np.isnan(comp[0])
+
+
+def test_align_rotates_hand_upright():
+    geom = tc.Geometry.from_landmark_set(LandmarkSet.from_preset("12"))
+    pts = np.random.default_rng(1).normal(size=(21, 3))
+    pts[0] = 0
+    pts[9] = [0, -2, 0]                               # knuckle straight up (image y-down)
+    upright = tc.normalize_pose(pts, geom, False, True, align=True)
+    a = np.radians(35)
+    rot = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+    tilted = pts.copy()
+    tilted[:, :2] = pts[:, :2] @ rot.T                # same hand, tilted 35 degrees
+    assert np.allclose(tc.normalize_pose(tilted, geom, False, True, align=True), upright)
+    assert np.allclose(upright, tc.normalize_pose(pts, geom, False, True))   # already upright
+
+
+def test_real_hand_swaps_mediapipe_label():
+    from rehab_app.engine.mediapipe_engine import real_hand
+    assert real_hand("Left") == "right" and real_hand("Right") == "left"
+    assert real_hand(None) is None
+
+
+def test_mock_session_reports_hand_and_completion():
+    ls = LandmarkSet.from_preset("12")
+    eng = MockEngine(ls)
+    ref = _record(eng, "open_fist")
+    assert ref.meta["aligned"] and ref.source_hand == "right"
+    eng.start_session(ref, SessionParams(100, 15, None, 1.0, 4.0, 10.0))
+    frames = [eng.session_frame(t / 30) for t in range(1, 120)]
+    hands = {f.hand for f in frames if f.hand}
+    assert hands == {"left"}                          # affected = the other hand
+    last = [f for f in frames if f.finger_completion_pct][-1]
+    assert last.finger_completion_pct["index"] > 80   # the mock index finger opens fully
+
+
+def test_hand_tally():
+    from types import SimpleNamespace
+    from rehab_app.ui.hands import HandTally
+    t = HandTally()
+    for h in ("left", "left", "right", None):
+        t.add(SimpleNamespace(new_measurement=True, hand=h))
+    assert t.recorded() == "left"
+    assert t.label("left") == "left hand ✓"
+    assert t.label("right").startswith("⚠ LEFT hand")

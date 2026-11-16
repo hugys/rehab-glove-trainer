@@ -38,6 +38,17 @@ class AppContext:
     def mirror_preview(self) -> bool:
         return self.db.get_setting("mirror_preview", "1") == "1"
 
+    def camera_rotation(self) -> int:
+        """Clockwise rotation applied to the camera image (e.g. a phone held upright)."""
+        try:
+            return int(self.db.get_setting("camera_rotation", "0"))
+        except ValueError:
+            return 0
+
+    def affected_hand(self) -> str:
+        p = self.patient()
+        return p["affected_hand"] if p else "left"
+
     def healthy_hand(self) -> str:
         p = self.patient()
         if not p:

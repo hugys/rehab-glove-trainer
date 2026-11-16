@@ -9,9 +9,13 @@ Conventions
 * Landmark arrays are (N, 3) with N = landmark_set.count (12 or 15), rows in
   `config.LANDMARK_PRESETS[preset]` order.
 * Landmarks in a FrameResult are in **millimetres in a y-up display frame**
-  (wrist at origin, fingers point +y), for drawing. Errors are in **% of hand
-  size** (wrist -> middle-finger knuckle, measured from the camera), so they need
-  no hand-size input; the UI adds mm when the patient's hand size was entered.
+  (wrist at origin, fingers point +y), for drawing. Errors are in **% of the
+  movement**: per finger, 0 % = the reference's start pose, 100 % = its end pose,
+  and the error is how far the patient's finger is from the reference's position
+  on that axis at the same progress.
+* `hand` is the hand the camera sees ("left" / "right", the patient's real hand),
+  smoothed over the last results; None while unsure. The UI compares it with the
+  hand the step needs and shows "Wrong hand".
 * ReferenceTrajectory.data is stored in the engine's native units
   (`units`: "hand" = multiples of wrist->middle-MCP distance).
 * Progress is 0-100 %. The UI worker owns the clock: it passes `elapsed_s`
@@ -39,12 +43,14 @@ class FrameResult:
     image: np.ndarray | None                 # BGR uint8 (H, W, 3) raw camera frame
     hand_detected: bool
     confidence: float = 0.0                  # 0-1 handedness score of the tracked hand
+    hand: str | None = None                  # "left" / "right" hand seen by the camera
     progress: float = 0.0                    # 0-100 %
     new_measurement: bool = False            # a fresh landmark result arrived with this frame
     landmarks: np.ndarray | None = None      # (N, 3) mm, display frame (current hand)
     landmarks_px: np.ndarray | None = None   # (N, 2) normalised 0-1 image coords (overlay)
     reference_landmarks: np.ndarray | None = None  # (N, 3) expected pose at this progress
-    finger_error_pct: dict[str, float] | None = None   # % of hand size
+    finger_error_pct: dict[str, float] | None = None   # % of the movement
+    finger_completion_pct: dict[str, float] | None = None  # 0-100 % along the movement
     overall_error_pct: float | None = None
     correction: dict[str, bool] | None = None      # error above the clinician threshold
     assist_state: dict[str, str] | None = None     # idle / moving / assisting / done
@@ -72,7 +78,7 @@ class ReferenceTrajectory:
 @dataclass
 class SessionParams:
     speed_pct: float
-    threshold_pct: float                     # error threshold, % of hand size
+    threshold_pct: float                     # error threshold, % of the movement
     hand_size_mm: float | None               # None = not measured (mm only for display)
     stall_window_s: float                    # clinician-set time t before assist engages
     stall_move_eps_pct: float                # % of hand size (upper limit)
@@ -86,6 +92,7 @@ class RehabEngine(ABC):
 
     def __init__(self, landmark_set: LandmarkSet):
         self.landmark_set = landmark_set
+        self.rotation = 0          # camera image rotation, degrees clockwise (0/90/180/270)
 
     # ---- camera ------------------------------------------------------------
     @abstractmethod

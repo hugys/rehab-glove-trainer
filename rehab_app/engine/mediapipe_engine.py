@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -124,6 +125,10 @@ def _open_capture(index: int, backend: str = "auto"):
     return cv2.VideoCapture(index, _backends()[backend])
 
 
+CAMERA_PERMISSION_HINT = (
+    "On macOS, allow camera access in System Settings > Privacy & Security > Camera for "
+    "\"Rehab Glove Trainer\" (desktop app) or for Terminal (if started from a terminal), "
+    "then restart the app.")
 CAPTURE_SIZE = (1280, 720)   # full-HD frames halve the frame rate; 720p is plenty for tracking
 
 
@@ -142,6 +147,36 @@ def _usable(cap) -> bool:
     return False
 
 
+_ROTATE = {90: "ROTATE_90_CLOCKWISE", 180: "ROTATE_180", 270: "ROTATE_90_COUNTERCLOCKWISE"}
+
+
+def rotate_frame(frame, degrees: int):
+    """Rotate a camera frame clockwise by 0/90/180/270 degrees (e.g. a phone held upright)."""
+    code = _ROTATE.get(int(degrees) % 360)
+    return frame if code is None else cv2.rotate(frame, getattr(cv2, code))
+
+
+def real_hand(label: str | None) -> str | None:
+    """MediaPipe labels handedness as if the image were a mirrored selfie. Camera frames
+    reach it unmirrored, so its "Left" is the patient's right hand and vice versa."""
+    return {"left": "right", "right": "left"}.get((label or "").lower())
+
+
+def request_camera_access() -> None:
+    """macOS: make sure the camera-permission prompt can appear.
+
+    The worker thread opens the camera, but OpenCV can only show macOS's permission prompt
+    from the main thread ("can not spin main run loop from other thread"). From a
+    Terminal the Terminal's permission applies, but the desktop app is its own app and
+    starts unauthorised, so every camera then fails. Opening the camera once here, on the
+    main thread at startup, shows the prompt the first time (and is a quick no-op after).
+    """
+    if sys.platform != "darwin" or cv2 is None:
+        return
+    cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
+    cap.release()
+
+
 def open_working_camera(index: int | None = None, max_index: int = 4, backend: str = "auto"):
     """index=None: scan 0..max_index-1 and use the first camera giving a non-black frame
     (skips Continuity Camera / virtual cams that open but deliver nothing)."""
@@ -149,8 +184,7 @@ def open_working_camera(index: int | None = None, max_index: int = 4, backend: s
         cap = _open_capture(index, backend)
         if not cap.isOpened():
             cap.release()
-            raise EngineError(f"Camera {index} did not open. On macOS, allow camera access for "
-                              "your terminal/Python in System Settings > Privacy & Security.")
+            raise EngineError(f"Camera {index} did not open. {CAMERA_PERMISSION_HINT}")
         _configure(cap)
         if _usable(cap):
             return cap
@@ -165,8 +199,8 @@ def open_working_camera(index: int | None = None, max_index: int = 4, backend: s
         if _usable(cap):
             return cap
         cap.release()
-    raise EngineError("No camera returned a usable image. Check the connection and camera "
-                      "permissions (macOS: System Settings > Privacy & Security > Camera).")
+    raise EngineError(f"No camera returned a usable image. Check the connection. "
+                      f"{CAMERA_PERMISSION_HINT}")
 
 
 def list_cameras(max_index: int = 6) -> list[int]:
@@ -238,7 +272,10 @@ class MediaPipeEngine(PipelineEngine):
         if (not ok or frame is None) and self._is_file:     # loop video files
             self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ok, frame = self._cap.read()
-        return frame if ok and frame is not None else None
+        if not ok or frame is None:
+            return None
+        # rotated before tracking, so landmarks, preview and recorded video all agree
+        return rotate_frame(frame, self.rotation)
 
     def _measure(self, elapsed_s):
         frame = self._read()
@@ -264,4 +301,5 @@ class MediaPipeEngine(PipelineEngine):
             m.overlay_px = np.array([[lm.x, lm.y] for lm in last.hand_landmarks[0]])
             if last.handedness:
                 m.confidence = float(last.handedness[0][0].score)
+                m.hand = real_hand(last.handedness[0][0].category_name)
         return m

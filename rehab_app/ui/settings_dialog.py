@@ -61,12 +61,22 @@ class SettingsDialog(QDialog):
         file_row.addWidget(browse)
         self.mirror = QCheckBox("Mirror the preview (selfie view)")
         self.mirror.setChecked(ctx.mirror_preview())
+        self.rotation = QComboBox()
+        for deg, label in ((0, "None"), (90, "90° clockwise"), (180, "180°"),
+                           (270, "90° counter-clockwise")):
+            self.rotation.addItem(label, deg)
+        self.rotation.setCurrentIndex(max(0, self.rotation.findData(ctx.camera_rotation())))
         self.record = QCheckBox("Save a video of every reference take and session repetition")
         self.record.setChecked(ctx.record_videos())
         f2 = QFormLayout()
         f2.addRow("Source", self.camera)
         f2.addRow("Video file", file_row)
         f2.addRow("", self.mirror)
+        f2.addRow("", QLabel("Turn mirroring off for a phone's back camera to see the same "
+                             "picture as on the phone's screen."))
+        f2.addRow("Rotate image", self.rotation)
+        f2.addRow("", QLabel("Use when the picture appears sideways or upside down, e.g. a "
+                             "phone held upright. Applies to tracking and recorded videos."))
         f2.addRow("", self.record)
         f2.addRow("Video folder", QLabel(str(config.VIDEO_DIR)))
 
@@ -146,6 +156,7 @@ class SettingsDialog(QDialog):
             "engine_choice": self.engine.currentData(), "landmark_preset": self.preset.currentData(),
             "camera_source": src, "camera_file": self.video_file.text().strip(),
             "mirror_preview": "1" if self.mirror.isChecked() else "0",
+            "camera_rotation": str(self.rotation.currentData()),
             "record_videos": "1" if self.record.isChecked() else "0",
             "stall_move_eps_pct": f"{self.eps.value():g}", "complete_tol_move_pct": f"{self.tol.value():g}",
             "servo_enabled": "1" if self.servo_on.isChecked() else "0",
@@ -155,6 +166,7 @@ class SettingsDialog(QDialog):
         old_source = ctx.worker.camera_source
         for k, v in values.items():
             db.set_setting(k, v)
+        ctx.engine.rotation = ctx.camera_rotation()
         ctx.worker.camera_source = camera_source_from_settings(db)
         if ctx.worker.camera_source != old_source:
             ctx.worker.close_camera()

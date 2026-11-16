@@ -194,5 +194,12 @@ class MockEngine(PipelineEngine):
             return Measurement(image=img, detected=False, overlay_px=None, confidence=0.0)
         overlay = np.stack([px[:, 0] / _IMG_W, px[:, 1] / _IMG_H], axis=1)
         conf = float(np.clip(self._rng.normal(0.95, 0.02), 0, 1))
+        # the simulated hand is always the one the step asks for
+        if self._mode == "reference":
+            hand = self._source_hand
+        elif self._mode == "session" and self._ref is not None:
+            hand = "left" if self._ref.source_hand == "right" else "right"
+        else:
+            hand = None
         return Measurement(image=img, detected=True, overlay_px=overlay, confidence=conf,
-                           new_pts21=px, new_t=elapsed_s)
+                           hand=hand, new_pts21=px, new_t=elapsed_s)

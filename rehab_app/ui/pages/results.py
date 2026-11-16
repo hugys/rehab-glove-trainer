@@ -11,6 +11,7 @@ from ...config import FINGERS, MOVEMENTS_BY_ID
 from ...data import export
 from ...data.database import session_threshold
 from .. import theme
+from ..hands import hand_phrase
 from ..units import fmt_err, unit_label
 from ..widgets import header_info
 from ..video_player import play_video
@@ -160,8 +161,14 @@ class ResultsPage(Page):
             for j, v in enumerate(vals):
                 self.table.setItem(i, j, QTableWidgetItem(v))
         overall = fmt_err(summ["overall"], hand, units)
+        affected = self.ctx.affected_hand()
+        hands = self.ctx.db.rep_hands(sid)
+        recorded = ", ".join(f"rep {r}: {h}{' ✓' if h == affected else ' ⚠'}"
+                             for r, h in sorted(hands.items()))
         self.summary.setText(
-            f"Speed {s['speed_pct']:.0f}% · threshold {fmt_err(thr, hand, units)} · "
+            f"{hand_phrase('affected', affected).capitalize()}"
+            + (f" (recorded - {recorded})" if recorded else "")
+            + f" · speed {s['speed_pct']:.0f}% · threshold {fmt_err(thr, hand, units)} · "
             f"landmarks {s['landmark_preset']}"
             + (f" · stall time {s['stall_window_s']:.1f} s" if s["stall_window_s"] else "")
             + f" · {summ['n_frames']} tracked frames · overall mean error {overall}"
@@ -181,6 +188,8 @@ class ResultsPage(Page):
         for v in rows:
             label = (f"▶ Ref take {v['take_or_rep']}" if v["kind"] == "reference"
                      else f"▶ Rep {v['take_or_rep']}")
+            if v["hand"]:
+                label += f" ({v['hand']})"
             self.video_row.addWidget(button(label, slot=lambda _=False, p=v["path"], t=label:
                                             play_video(p, t[2:], self)))
         self.video_row.addStretch()

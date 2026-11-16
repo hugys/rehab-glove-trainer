@@ -4,11 +4,13 @@ Pure numpy - no camera, no MediaPipe - so both the real engine and the mock
 engine share exactly the same pipeline:
 
   REFERENCE : 4 s take(s) -> keep key landmarks -> wrist = (0,0,0) -> divide by
-              hand size -> mirror -> re-index to progress 0-100 % -> mean of takes
-              + tolerance band
+              hand size -> rotate hand upright -> mirror -> re-index to progress
+              0-100 % -> mean of takes + tolerance band
   SESSION   : progress = elapsed / duration (duration from clinician speed)
-              ERROR  (diagnostic): per-finger distance to the reference at the
-                                   same progress
+              ERROR  (diagnostic): per finger, along the movement's own axis
+                                   (0 % = start pose, 100 % = end pose of the
+                                   reference): how far the patient is from where
+                                   the reference is at the same progress
               ASSIST (drives motors): StallAssist - finger has not moved for
                                    `stall_window_s` and is not at the target yet
 
@@ -42,6 +44,11 @@ STALL_EPS_FLOOR = 0.01         # never call less movement than tracking jitter "
 STALL_EPS_FRACTION = 0.5       # "stopped" = under half of what the reference moves in t
 STALL_LAG = 0.05               # ...and at least 5 % of the movement behind the reference
 MIN_REACH_SPAN = 0.02          # fingers the reference barely moves: no lag check
+# Error along the movement axis:
+MIN_AXIS_SPAN = 0.15           # fingers the reference moves less than this (hand units) have no
+                               # usable axis: they should stay put, and their error is the
+                               # distance from the reference relative to STILL_ERR_SCALE
+STILL_ERR_SCALE = 0.25         # a still finger 1/4 hand length away from the reference = 100 %
 # Per-finger completion (used with complete_tol_move):
 COMPLETE_TOL_FLOOR = 0.02      # never demand more precision than tracking can deliver
 STILL_FINGER_SPAN = 0.05       # reference moves the finger less than this = finger should
@@ -69,14 +76,24 @@ class Geometry:
 # 1. Coordinate transforms
 # =============================================================================
 
-def normalize_pose(pts21: np.ndarray, geom: Geometry, mirror: bool, scale: bool) -> np.ndarray:
+def normalize_pose(pts21: np.ndarray, geom: Geometry, mirror: bool, scale: bool,
+                   align: bool = False) -> np.ndarray:
     """(21, 3) pixel-scaled landmarks -> (K, 3) wrist-relative, optionally hand-size
-    normalised and x-mirrored, reduced to the key landmarks."""
+    normalised, rotated upright and x-mirrored, reduced to the key landmarks.
+
+    align (added for the app): rotate in the image plane so wrist -> middle-finger knuckle
+    points straight up (-y). A hand held at a slight angle then still lines up with the
+    reference, so overlay and error compare finger movement, not how the hand was tilted."""
     pts = np.array(pts21, dtype=float, copy=True)
     pts -= pts[WRIST]
     if scale:
         size = np.linalg.norm(pts[MIDDLE_FINGER_MCP])
         pts /= max(size, 1e-6)
+    if align:
+        x, y = pts[MIDDLE_FINGER_MCP, :2]
+        a = np.arctan2(x, -y)                    # angle of the knuckle away from straight up
+        c, s = np.cos(a), np.sin(a)
+        pts[:, :2] = pts[:, :2] @ np.array([[c, -s], [s, c]])
     if mirror:
         pts[:, 0] *= -1
     return pts[list(geom.key_landmarks)]
@@ -133,6 +150,48 @@ def build_reference(takes: list[np.ndarray], geom: Geometry):
 # =============================================================================
 # 3. Error metric (diagnostic only - never drives the servos)
 # =============================================================================
+
+class MovementAxis:
+    """Per finger, the straight line from the reference's start pose to its end pose
+    (all of the finger's tracked points together). Positions along it are the finger's
+    completion: 0 = start, 1 = end (e.g. fully stretched when opening a fist).
+
+    errors(ref_pose, cur_pose) -> (err (5,), completion (5,))
+      err        : |reference completion - patient completion|, as a fraction of the
+                   movement. Only this one axis counts; sideways deviation is ignored.
+      completion : patient completion 0-1 (NaN for fingers that should stay still).
+    Fingers the reference barely moves (< MIN_AXIS_SPAN) have no axis: their error is the
+    distance from the reference pose relative to STILL_ERR_SCALE.
+    """
+
+    def __init__(self, ref_data: np.ndarray, geom: Geometry):
+        self.geom = geom
+        self._rows = [list(r) for r in geom.finger_rows]
+        dims = slice(None) if USE_Z else slice(0, 2)
+        self._dims = dims
+        self._start = [ref_data[0, r, dims].ravel() for r in self._rows]
+        vec = [ref_data[-1, r, dims].ravel() - st for r, st in zip(self._rows, self._start)]
+        self.span = np.array([np.linalg.norm(v) for v in vec])
+        self._vec = vec
+        self.moving = self.span >= MIN_AXIS_SPAN
+
+    def completion(self, pose: np.ndarray) -> np.ndarray:
+        out = np.full(len(self._rows), np.nan)
+        for i, (r, st, v) in enumerate(zip(self._rows, self._start, self._vec)):
+            if self.moving[i]:
+                out[i] = float(np.dot(pose[r, self._dims].ravel() - st, v) / self.span[i] ** 2)
+        return out
+
+    def errors(self, ref_pose: np.ndarray, cur_pose: np.ndarray):
+        c_ref = np.clip(self.completion(ref_pose), 0.0, 1.0)
+        c_cur = np.clip(self.completion(cur_pose), 0.0, 1.0)
+        err = np.abs(c_ref - c_cur)
+        for i, r in enumerate(self._rows):
+            if not self.moving[i]:
+                d = cur_pose[r, self._dims] - ref_pose[r, self._dims]
+                err[i] = float(np.linalg.norm(d, axis=-1).mean()) / STILL_ERR_SCALE
+        return err, c_cur
+
 
 def finger_errors(ref_pose: np.ndarray, cur_pose: np.ndarray, geom: Geometry):
     """Both (K, 3). Returns err (5,) mean per-finger 3-D distance and direction (5,):

@@ -8,6 +8,7 @@ real camera and the mock.
 """
 from __future__ import annotations
 
+from collections import Counter, deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -19,6 +20,9 @@ from . import tracking_core as tc
 from .interface import EngineError, FrameResult, ReferenceTrajectory, RehabEngine, SessionParams
 
 MIN_TAKE_FRAMES = 10
+HAND_VOTES = 15                # handedness = majority of the last results...
+HAND_MIN_VOTES = 5             # ...once there are at least this many
+HAND_MIN_SCORE = 0.6           # results the tracker is unsure about don't vote
 
 
 @dataclass
@@ -27,6 +31,7 @@ class Measurement:
     detected: bool                       # a hand is currently tracked (for overlay)
     overlay_px: np.ndarray | None        # (21, 2) normalised image coords of latest result
     confidence: float = 0.0
+    hand: str | None = None              # "left" / "right" (the patient's real hand)
     # Fresh landmark result (may lag the frame in LIVE_STREAM mode):
     new_pts21: np.ndarray | None = None  # (21, 3) pixel-scale, image y-down
     new_t: float | None = None           # capture time of that result, seconds since t0
@@ -52,6 +57,9 @@ class PipelineEngine(RehabEngine):
         self._target = None
         self._reach_start = self._reach_end = None
         self._last: dict = {}
+        self._align = True                         # rotate hands upright (see normalize_pose)
+        self._axis: tc.MovementAxis | None = None
+        self._hand_votes: deque = deque(maxlen=HAND_VOTES)
 
     # ---- to implement ----------------------------------------------------------
     def _measure(self, elapsed_s: float | None) -> Measurement:
@@ -69,17 +77,30 @@ class PipelineEngine(RehabEngine):
         out[:, 1] *= -1
         return out
 
+    def _hand(self, m: Measurement) -> str | None:
+        """Smoothed handedness: one wrong label from the tracker must not flash a warning."""
+        if not m.detected:
+            self._hand_votes.clear()
+            return None
+        if m.new_pts21 is not None and m.hand and m.confidence >= HAND_MIN_SCORE:
+            self._hand_votes.append(m.hand)
+        if len(self._hand_votes) < HAND_MIN_VOTES:
+            return None
+        return Counter(self._hand_votes).most_common(1)[0][0]
+
     def _base_frame(self, m: Measurement, progress: float, new: bool) -> FrameResult:
         px = m.overlay_px[self._rows] if (m.overlay_px is not None and m.detected) else None
         return FrameResult(image=m.image, hand_detected=m.detected, confidence=m.confidence,
-                           progress=progress, new_measurement=new, landmarks_px=px)
+                           hand=self._hand(m), progress=progress, new_measurement=new,
+                           landmarks_px=px)
 
     # ---- preview -------------------------------------------------------------
     def preview_frame(self) -> FrameResult:
         m = self._measure(None)
         fr = self._base_frame(m, 0.0, False)
         if m.new_pts21 is not None:
-            fr.landmarks = self._display(tc.normalize_pose(m.new_pts21, self.geom, False, True))
+            fr.landmarks = self._display(tc.normalize_pose(m.new_pts21, self.geom, False, True,
+                                                           align=True))
         return fr
 
     # ---- reference -----------------------------------------------------------
@@ -92,18 +113,21 @@ class PipelineEngine(RehabEngine):
 
     def start_take(self, take_index: int):
         self._take_times, self._take_poses = [], []
+        self._hand_votes.clear()
         self._on_phase_start()
 
     def reference_frame(self, elapsed_s: float) -> FrameResult:
         m = self._measure(elapsed_s)
         new = m.new_pts21 is not None and m.new_t is not None and m.new_t >= 0
         if new:
-            # healthy hand -> mirrored onto the affected side, hand-size normalised
-            self._take_poses.append(tc.normalize_pose(m.new_pts21, self.geom, True, True))
+            # healthy hand -> upright, mirrored onto the affected side, hand-size normalised
+            self._take_poses.append(tc.normalize_pose(m.new_pts21, self.geom, True, True,
+                                                      align=True))
             self._take_times.append(m.new_t)
         fr = self._base_frame(m, min(100.0, 100.0 * elapsed_s / self._duration), new)
         if m.new_pts21 is not None:
-            fr.landmarks = self._display(tc.normalize_pose(m.new_pts21, self.geom, False, True))
+            fr.landmarks = self._display(tc.normalize_pose(m.new_pts21, self.geom, False, True,
+                                                           align=True))
         return fr
 
     def end_take(self) -> dict:
@@ -129,7 +153,7 @@ class PipelineEngine(RehabEngine):
             progress=np.linspace(0, 100, len(mean)), data=mean, tolerance=tol, rom=rom,
             n_takes=len(self._takes), units="hand", source_hand=self._source_hand,
             meta={"engine": type(self).__name__, "mirrored": True, "scale_normalized": True,
-                  "duration_s": self._duration})
+                  "aligned": True, "duration_s": self._duration})
 
     # ---- session -------------------------------------------------------------
     def start_session(self, reference: ReferenceTrajectory, params: SessionParams):
@@ -149,9 +173,13 @@ class PipelineEngine(RehabEngine):
                                       start_grace_s=params.start_grace_s,
                                       ref_reach=ref_reach, duration_s=self._duration,
                                       complete_tol_move=params.complete_tol_move_pct / 100.0)
+        # References recorded before hands were rotated upright are compared unrotated
+        self._align = bool(reference.meta.get("aligned", False))
+        self._axis = tc.MovementAxis(reference.data, self.geom)
         self._target = reference.data[-1]          # fully completed pose of the exercise
         self._reach_start, self._reach_end = ref_reach[0], ref_reach[-1]
         self._last = {}
+        self._hand_votes.clear()
         self._on_phase_start()
 
     def session_frame(self, elapsed_s: float) -> FrameResult:
@@ -163,9 +191,10 @@ class PipelineEngine(RehabEngine):
             p = m.new_t / self._duration
             if 0.0 <= p <= 1.0:
                 new = True
-                pose = tc.normalize_pose(m.new_pts21, self.geom, False, True)  # live hand: no mirror
+                # live hand: no mirror
+                pose = tc.normalize_pose(m.new_pts21, self.geom, False, True, align=self._align)
                 ref_pose = tc.interp_rows(self._ref.data, p)
-                err, _ = tc.finger_errors(ref_pose, pose, self.geom)
+                err, completion = self._axis.errors(ref_pose, pose)
                 cmds, states = self._assist.update(pose, self._target, m.new_t, p)
                 err_pct = {f: float(e * 100.0) for f, e in zip(FINGERS, err)}
                 reach = np.linalg.norm(pose[list(self.geom.tip_rows)], axis=1)
@@ -175,6 +204,8 @@ class PipelineEngine(RehabEngine):
                 self._last = dict(
                     landmarks=self._display(pose), reference_landmarks=self._display(ref_pose),
                     finger_error_pct=err_pct,
+                    finger_completion_pct={f: (None if np.isnan(c) else float(c * 100.0))
+                                           for f, c in zip(FINGERS, completion)},
                     overall_error_pct=float(np.mean(list(err_pct.values()))),
                     correction={f: e > self._params.threshold_pct for f, e in err_pct.items()},
                     assist_state=dict(zip(FINGERS, states)),

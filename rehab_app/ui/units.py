@@ -1,6 +1,7 @@
-"""Formatting of error values: % of hand size, plus mm when the hand size was measured.
+"""Formatting of error values.
 
-Sessions recorded before errors moved to % of hand size stored mm (err_units 'mm').
+err_units: 'move' = % of the movement (current); 'pct' = % of hand size, plus mm when the
+hand size was measured (older sessions); 'mm' = the first sessions, stored in mm.
 """
 from __future__ import annotations
 
@@ -11,6 +12,8 @@ def fmt_err(value: float | None, hand_mm: float | None = None, units: str = "pct
         return "--"
     if units == "mm":
         return f"{value:.{decimals}f} mm"
+    if units == "move":
+        return f"{value:.{decimals}f} %"
     text = f"{value:.{decimals}f} %"
     if hand_mm:
         text += f" ({value * hand_mm / 100:.{decimals}f} mm)"
@@ -18,4 +21,4 @@ def fmt_err(value: float | None, hand_mm: float | None = None, units: str = "pct
 
 
 def unit_label(units: str = "pct") -> str:
-    return "mm" if units == "mm" else "% of hand size"
+    return {"mm": "mm", "move": "% of movement"}.get(units, "% of hand size")
