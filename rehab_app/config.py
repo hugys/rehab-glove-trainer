@@ -160,6 +160,11 @@ COMPLETE_TOL_MOVE_PCT = 10.0  # % of EACH finger's own movement in the reference
                               # to the end position (or past it) = "movement complete"
 
 
+# When the movement time is over and a finger has not reached the end position, the glove
+# finishes the movement. The repetition is extended by at most this long for that.
+ASSIST_FINISH_MAX_S = 6.0
+
+
 def session_duration_s(speed_pct: float) -> float:
     """Intended movement duration at a given speed (% of the 4 s reference).
 

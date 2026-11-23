@@ -49,6 +49,8 @@ MIN_AXIS_SPAN = 0.15           # fingers the reference moves less than this (han
                                # usable axis: they should stay put, and their error is the
                                # distance from the reference relative to STILL_ERR_SCALE
 STILL_ERR_SCALE = 0.25         # a still finger 1/4 hand length away from the reference = 100 %
+COMPLETION_MEDIAN = 5          # completion = median of the last results, so one jittery frame
+                               # cannot count as "the furthest the finger got"
 # Per-finger completion (used with complete_tol_move):
 COMPLETE_TOL_FLOOR = 0.02      # never demand more precision than tracking can deliver
 STILL_FINGER_SPAN = 0.05       # reference moves the finger less than this = finger should
@@ -218,7 +220,9 @@ class StallAssist:
     target (within `complete_tol`), assist: drive it the rest of the way. Once assisting,
     keep going until done (motor-induced motion must not be read as the patient resuming).
 
-    update(cur_pose, target_pose, now, progress=None) -> (cmds, states)
+    update(cur_pose, target_pose, now, progress=None, force=False) -> (cmds, states)
+      force  : the movement time is over (added for the app) - every finger that has not
+               reached the end position is assisted now, stalled or not
       cmds   : 5 ints CW/CCW/HOLD (FINGERS order)
       states : 5 of "idle" (filling the window) / "moving" / "assisting" / "done"
 
@@ -296,7 +300,8 @@ class StallAssist:
         self._done = [False] * len(FINGERS)
         self._t_start = None
 
-    def update(self, cur_pose, target_pose, now: float, progress: float | None = None):
+    def update(self, cur_pose, target_pose, now: float, progress: float | None = None,
+               force: bool = False):
         if self._t_start is None:
             self._t_start = now
         in_grace = (now - self._t_start) < self.start_grace_s
@@ -322,7 +327,8 @@ class StallAssist:
                 window_full = bool(hist) and (now - hist[0][0]) >= self.window_s * 0.95
                 spread = (max(r for _, r in hist) - min(r for _, r in hist)) if hist else 0.0
                 stopped = window_full and spread < self.eps[i]
-                if stopped and not in_grace and self._behind(i, reach_cur[i], progress):
+                if force or (stopped and not in_grace
+                             and self._behind(i, reach_cur[i], progress)):
                     self._assisting[i] = True
                 else:
                     cmds.append(HOLD)

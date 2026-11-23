@@ -31,7 +31,9 @@ INFO: dict[str, str] = {
         "threshold” in the results.<br><br>For assessment only: it never moves the glove."),
     "stall_time": (
         "<b>Stall time t</b><br>How long a finger may stop before the glove motor for that "
-        "finger takes over and moves it to the end position.<br><br>A finger only counts as "
+        "finger takes over and moves it to the end position. The glove also takes over any "
+        "finger that has not reached the end position when the movement time is over, and "
+        "the repetition runs on (up to 6 s) until it is there.<br><br>A finger only counts as "
         "stopped if it is also behind where the reference is at that moment, so a patient "
         "keeping pace at a slow speed is never interrupted."),
     "grace": (
@@ -57,7 +59,8 @@ INFO: dict[str, str] = {
         "finger did not reach. Timing and sideways wobble do not count.<br><br>Example: a "
         "finger that only opens halfway → 50 % error. Fully stretched → 0 %. During a "
         "repetition the bar starts at 100 % and shrinks as the finger gets further; what is "
-        "left at the end is the repetition's error.<br><br>Fingers the reference keeps still "
+        "left at the end is the repetition's error. Only the patient's own movement counts: "
+        "when the glove takes a finger over, its error stays at what it was at that moment.<br><br>Fingers the reference keeps still "
         "(e.g. the curled fingers when pointing) have no movement to measure along: for them, "
         "100 % means being a quarter of the hand length away from where the reference keeps them."
         "<br><br>For assessment only: the glove is driven by stalls, not by error."),

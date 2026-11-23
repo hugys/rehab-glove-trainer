@@ -19,6 +19,9 @@ MediaPipe script (not included in this repo; its logic is ported into `rehab_app
   `rehab_app/ui/info_text.py`.
 - **Stall-triggered glove assist:** if a finger stops moving for a time *t* that the
   physician sets, the glove's motor for that finger drives it to the end position.
+  The same happens to any finger that is not at the end position when the movement time
+  is over: the repetition runs on (up to 6 s) until the glove has finished it. The error
+  counts only the patient's own movement, not what the glove did.
 - **Video:** every reference take and session repetition is recorded as MP4 and can be
   played back in the app.
 - **Storage:** SQLite, with CSV export.

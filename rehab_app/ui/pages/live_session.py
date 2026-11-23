@@ -287,8 +287,10 @@ class LiveSessionPage(Page):
         if triggered:
             # Stall of t seconds detected -> hand the planned moves to the servos
             msg = servo_motion.trigger([moves[f] for f in triggered if f in moves])
-            self._event(f"  Rep {self.rep + 1}: {', '.join(triggered)} stopped at "
-                        f"{frame.progress:.0f}% → {msg}", theme.ASSIST)
+            why = ("not finished when the time was up" if frame.finishing
+                   else f"stopped at {frame.progress:.0f}%")
+            self._event(f"  Rep {self.rep + 1}: {', '.join(triggered)} {why} → {msg}",
+                        theme.ASSIST)
             self._rep_assisted.update(triggered)
         for f, st in states.items():
             if st != self._prev_states.get(f):

@@ -12,8 +12,12 @@ Conventions
   (wrist at origin, fingers point +y), for drawing. Errors are in **% of the
   movement**: per finger, 0 % = the reference's start pose, 100 % = its end pose,
   and the error is the part of that movement the finger has not reached so far in
-  the repetition (fully there = 0 %, halfway = 50 %), regardless of timing. The
-  last frame of a repetition therefore carries the repetition's result.
+  the repetition (fully there = 0 %, halfway = 50 %), regardless of timing. Only
+  the patient's own movement counts: once the glove assists a finger its error is
+  frozen. The last frame of a repetition therefore carries the repetition's result.
+* A repetition lasts the clinician's duration. `elapsed_s` may run past it: the
+  engine then assists every unfinished finger (`finishing`) and the worker keeps the
+  repetition going until all are done or `config.ASSIST_FINISH_MAX_S` has passed.
 * `hand` is the hand the camera sees ("left" / "right", the patient's real hand),
   smoothed over the last results; None while unsure. The UI compares it with the
   hand the step needs and shows "Wrong hand".
@@ -57,6 +61,8 @@ class FrameResult:
     assist_state: dict[str, str] | None = None     # idle / moving / assisting / done
     assist_cmd: dict[str, int] | None = None       # +1 CW (flex) / -1 CCW (extend) / 0 hold
     servo_moves: dict | None = None                # finger -> hardware.servo_motion.ServoMove
+    finishing: bool = False                        # movement time is over; the glove is
+                                                   # completing the unfinished fingers
 
 
 @dataclass

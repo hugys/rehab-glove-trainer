@@ -177,6 +177,8 @@ class PipelineEngine(RehabEngine):
         self._align = bool(reference.meta.get("aligned", False))
         self._axis = tc.MovementAxis(reference.data, self.geom)
         self._best = np.zeros(len(FINGERS))        # furthest each finger got this repetition
+        self._recent: deque = deque(maxlen=tc.COMPLETION_MEDIAN)
+        self._frozen = np.full(len(FINGERS), np.nan)   # error when the glove took over
         self._target = reference.data[-1]          # fully completed pose of the exercise
         self._reach_start, self._reach_end = ref_reach[0], ref_reach[-1]
         self._last = {}
@@ -190,18 +192,29 @@ class PipelineEngine(RehabEngine):
         new = False
         if m.new_pts21 is not None and m.new_t is not None:
             p = m.new_t / self._duration
-            if 0.0 <= p <= 1.0:
+            if p >= 0.0:
                 new = True
+                time_up = p >= 1.0             # unfinished fingers are assisted from here on
+                p = min(p, 1.0)
                 # live hand: no mirror
                 pose = tc.normalize_pose(m.new_pts21, self.geom, False, True, align=self._align)
                 ref_pose = tc.interp_rows(self._ref.data, p)
                 # error = the part of the movement not reached so far (timing doesn't count:
                 # fully stretched when opening a fist = 0 %, halfway = 50 %)
-                completion = self._axis.completion(pose)
-                self._best = np.fmax(self._best, np.clip(completion, 0.0, 1.0))
+                # Only the patient's own movement counts: when the glove takes a finger
+                # over, its error stays at what it was at that moment.
+                self._recent.append(self._axis.completion(pose))
+                completion = np.median(np.array(self._recent), axis=0)
+                cmds, states = self._assist.update(pose, self._target, m.new_t, p,
+                                                   force=time_up)
+                own = np.isnan(self._frozen)
+                self._best = np.where(own, np.fmax(self._best, np.clip(completion, 0.0, 1.0)),
+                                      self._best)
                 err = np.where(self._axis.moving, 1.0 - self._best, self._axis.drift(pose))
+                taken = own & np.array([s == "assisting" for s in states])
+                self._frozen = np.where(taken, err, self._frozen)
+                err = np.where(np.isnan(self._frozen), err, self._frozen)
                 completion = np.where(self._axis.moving, self._best, np.nan)
-                cmds, states = self._assist.update(pose, self._target, m.new_t, p)
                 err_pct = {f: float(e * 100.0) for f, e in zip(FINGERS, err)}
                 reach = np.linalg.norm(pose[list(self.geom.tip_rows)], axis=1)
                 moves = {f: servo_motion.plan_move(self._ref.movement_id, f, reach[i],
@@ -217,6 +230,7 @@ class PipelineEngine(RehabEngine):
                     assist_state=dict(zip(FINGERS, states)),
                     assist_cmd=dict(zip(FINGERS, cmds)),
                     servo_moves=moves,
+                    finishing=time_up,
                 )
         fr = self._base_frame(m, progress_pct, new)
         for k, v in self._last.items():

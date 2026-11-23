@@ -417,3 +417,44 @@ def test_hand_tally():
     assert t.recorded() == "left"
     assert t.label("left") == "left hand ✓"
     assert t.label("right").startswith("⚠ LEFT hand")
+
+
+def test_time_up_assists_unfinished_fingers_and_freezes_their_error():
+    """No stall within the movement time, but some fingers are not at the end when it is
+    over: the glove finishes them, and what it does is not credited to the patient."""
+    ls = LandmarkSet.from_preset("12")
+    eng = MockEngine(ls)
+    ref = _record(eng, "open_fist")
+    dur = config.session_duration_s(100)
+    eng.start_session(ref, SessionParams(100, 15, None, 30.0, 4.0, 10.0))   # stall time 30 s
+    fr = None
+    for i in range(int(dur * 30)):
+        fr = eng.session_frame(i / 30)
+        assert "assisting" not in fr.assist_state.values() and not fr.finishing
+    before = dict(fr.finger_error_pct)
+    assert before["ring"] > 25                        # the mock ring finger stops halfway
+    t, started = dur, False
+    while t < dur + config.ASSIST_FINISH_MAX_S:
+        fr = eng.session_frame(t)
+        t += 1 / 30
+        started |= fr.assist_state["ring"] == "assisting" and fr.assist_cmd["ring"] == tc.CCW
+        if all(s == "done" for s in fr.assist_state.values()):
+            break
+    assert fr.finishing and started and fr.progress == 100
+    assert all(s == "done" for s in fr.assist_state.values())      # the glove finished it
+    assert fr.finger_error_pct["ring"] == pytest.approx(before["ring"], abs=3)
+    assert fr.finger_error_pct["index"] < 10          # done by the patient: no assist needed
+
+
+def test_stall_assist_force():
+    geom = tc.Geometry.from_landmark_set(LandmarkSet.from_preset("12"))
+    pose = np.zeros((12, 3))
+    pose[geom.tip_rows, 1] = -1.0
+    target = pose.copy()
+    target[geom.tip_rows[1], 1] = -0.5                # only the index is not at the target
+    sa = tc.StallAssist(geom, window_s=5.0)
+    cmds, states = sa.update(pose, target, 0.0)
+    assert states[1] == "idle"
+    cmds, states = sa.update(pose, target, 0.1, force=True)
+    assert states[1] == "assisting" and cmds[1] == tc.CW
+    assert states[0] == "done" and cmds[0] == tc.HOLD

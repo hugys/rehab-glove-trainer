@@ -159,7 +159,9 @@ class PatientDisplay(QWidget):
             elif not frame.hand_detected:
                 self.status.setText("Keep your hand in view")
             elif phase == "session" and "assisting" in states.values():
-                self.status.setText("The glove is helping - relax and let it guide you")
+                self.status.setText("Time is up - the glove is finishing the movement"
+                                    if frame.finishing else
+                                    "The glove is helping - relax and let it guide you")
             else:
                 self.status.setText("Keep going…")
             if phase == "session" and frame.finger_error_pct:
