@@ -94,7 +94,8 @@ class LiveSessionPage(Page):
         legend = muted(f"Bars = part of the movement still missing · "
                        f"<span style='color:{theme.ASSIST}'><b>ASSIST</b></span> = finger stalled, "
                        f"glove driving it")
-        legend.setWordWrap(False)
+        legend.setWordWrap(True)
+        legend.setStyleSheet("font-size: 16px;")
         right.addWidget(card(self.fingers, legend, title="Per finger", info="finger_panel"), 3)
         right.addWidget(card(self.hand), 2)
         right.addWidget(card(self.events, title="Repetitions & events (double-click ▶ to play video)"))
@@ -300,11 +301,13 @@ class LiveSessionPage(Page):
         self._prev_states = dict(states)
         errs = frame.finger_error_pct or {}
         cmds = frame.assist_cmd or {}
+        pos = frame.finger_completion_pct or {}
         self._buffer.append((
             self.rep + 1, elapsed, frame.progress, frame.confidence, int(frame.hand_detected),
             *[errs.get(f) for f in FINGERS], frame.overall_error_pct,
             corr_mask_from(frame.correction),
-            *[states.get(f) for f in FINGERS], *[cmds.get(f) for f in FINGERS], frame.hand))
+            *[states.get(f) for f in FINGERS], *[cmds.get(f) for f in FINGERS], frame.hand,
+            *[pos.get(f) for f in FINGERS]))
 
     def on_countdown(self, n):
         self.camera.set_countdown(n if n > 0 else None)

@@ -55,7 +55,9 @@ class FrameResult:
     landmarks_px: np.ndarray | None = None   # (N, 2) normalised 0-1 image coords (overlay)
     reference_landmarks: np.ndarray | None = None  # (N, 3) expected pose at this progress
     finger_error_pct: dict[str, float] | None = None   # % of the movement
-    finger_completion_pct: dict[str, float] | None = None  # 0-100 % along the movement
+    finger_completion_pct: dict[str, float] | None = None  # 0-100 %: how far along the
+                                                   # movement the finger has got, glove's
+                                                   # part included (error = patient's only)
     overall_error_pct: float | None = None
     correction: dict[str, bool] | None = None      # error above the clinician threshold
     assist_state: dict[str, str] | None = None     # idle / moving / assisting / done

@@ -119,9 +119,10 @@ def test_database_roundtrip(tmp_path):
 
     sid = db.create_session(pid, "open_fist", rid, "15", 50, 10, 2, stall_window_s=1.5)
     row = (1, 0.5, 10.0, 0.9, 1, 5, 6, 7, 15, 12, 9, 0b11000,
-           "done", "moving", "moving", "assisting", "idle", 0, 0, 0, 1, 0, "left")
+           "done", "moving", "moving", "assisting", "idle", 0, 0, 0, 1, 0, "left",
+           95, 94, 93, 85, 88)
     assert len(row) == len(FRAME_INSERT_COLS)
-    db.add_frames(sid, [row] * 3 + [row[:-1] + ("right",)])
+    db.add_frames(sid, [row] * 3 + [row[:22] + ("right",) + row[23:]])
     assert db.rep_hands(sid) == {1: "left"}           # majority of the rep
     summ = db.session_summary(sid)
     assert summ["mean"]["ring"] == pytest.approx(15)
@@ -222,6 +223,7 @@ def test_reference_follows_clinician_speed(speed):
     reference stretched to the session duration set by the speed."""
     ls = LandmarkSet.from_preset("12")
     eng = MockEngine(ls)
+    eng._rng = np.random.default_rng(0)       # the mock drops 1 % of detections at random
     ref = _record(eng)
     eng.start_session(ref, SessionParams(speed, 10, 90, 1, 4, 8))
     t = 2.0
@@ -366,7 +368,8 @@ def test_error_is_the_part_of_the_movement_not_reached(tmp_path):
     pid = db.add_patient("A", "left")
     sid = db.create_session(pid, "open_fist", None, "12", 100, 15, 2)
     def row(rep_no, t, e):
-        return (rep_no, t, 25 * t, 1.0, 1, e, e, e, e, e, e, 0, *["moving"] * 5, *[0] * 5, "left")
+        return (rep_no, t, 25 * t, 1.0, 1, e, e, e, e, e, e, 0, *["moving"] * 5, *[0] * 5, "left",
+                *[100 - e] * 5)
     db.add_frames(sid, [row(1, 0, 100), row(1, 2, 60), row(1, 4, 10),     # ends at 10 %
                         row(2, 0, 100), row(2, 4, 50)])                    # ends at 50 %
     summ = db.session_summary(sid)
@@ -458,3 +461,28 @@ def test_stall_assist_force():
     cmds, states = sa.update(pose, target, 0.1, force=True)
     assert states[1] == "assisting" and cmds[1] == tc.CW
     assert states[0] == "done" and cmds[0] == tc.HOLD
+
+
+def test_assist_spans_on_the_graph_axis():
+    from rehab_app.ui.pages.results import assist_spans
+    rows = [{"t_s": t, "state_ring": st} for t, st in
+            [(0, "moving"), (1, "assisting"), (2, "assisting"), (3, "done"), (4, "done")]]
+    assert assist_spans(rows, "ring", lambda r: 25.0 * r["t_s"]) == [(25.0, 75.0)]
+    rows = [{"t_s": t, "state_ring": st} for t, st in [(4, "moving"), (5, "assisting"),
+                                                       (6, "assisting")]]
+    assert assist_spans(rows, "ring", lambda r: 25.0 * r["t_s"]) == [(125.0, 150.0)]
+
+
+def test_position_keeps_the_gloves_part_but_error_does_not():
+    ls = LandmarkSet.from_preset("12")
+    eng = MockEngine(ls)
+    ref = _record(eng, "open_fist")
+    eng.start_session(ref, SessionParams(100, 15, None, 1.0, 4.0, 10.0))
+    fr, t = None, 0.0
+    while t < 4.0 + config.ASSIST_FINISH_MAX_S:
+        fr = eng.session_frame(t)
+        t += 1 / 30
+        if t > 4.0 and all(s == "done" for s in fr.assist_state.values()):
+            break
+    assert fr.finger_completion_pct["ring"] > 85      # the glove got it there...
+    assert fr.finger_error_pct["ring"] > 25           # ...which is not the patient's doing

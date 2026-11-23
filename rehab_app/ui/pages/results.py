@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QMessageBox,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from ...config import FINGERS, MOVEMENTS_BY_ID
+from ...config import FINGERS, MOVEMENTS_BY_ID, session_duration_s
 from ...data import export
 from ...data.database import session_threshold
 from .. import theme
@@ -18,6 +18,26 @@ from ..video_player import play_video
 from .base import Page, button, card, heading, muted
 
 
+LEGEND_SIZE = "14pt"
+
+
+def assist_spans(rows, finger: str, x_of) -> list[tuple[float, float]]:
+    """(start, end) on the graph's x axis of every stretch in which the glove was moving
+    the finger. rows: one repetition's frames, in time order."""
+    spans, start, last = [], None, None
+    for r in rows:
+        if r[f"state_{finger}"] == "assisting":
+            if start is None:
+                start = x_of(r)
+            last = x_of(r)
+        elif start is not None:
+            spans.append((start, x_of(r)))
+            start = None
+    if start is not None:
+        spans.append((start, last))
+    return spans
+
+
 class ResultsPage(Page):
     title = "Results"
 
@@ -26,18 +46,22 @@ class ResultsPage(Page):
         self.session_box = QComboBox()
         self.session_box.currentIndexChanged.connect(self._show_session)
         self.summary = muted("")
+        self.kick_info = muted("")
+        self.kick_info.setWordWrap(True)
 
         pg.setConfigOptions(antialias=True, background="w", foreground=theme.TEXT)
         self.curve_plot = pg.PlotWidget()
-        self.curve_plot.setLabel("bottom", "Movement progress", units="%")
+        self.curve_plot.setLabel("bottom", "Movement time (% of the planned duration)")
         self.curve_plot.setLabel("left", "Error (% of hand size)")
-        self.curve_plot.addLegend(offset=(-10, 10))
+        # bottom left: the error starts at 100 % and falls, so that corner stays empty
+        self.curve_plot.addLegend(offset=(20, -20), labelTextSize=LEGEND_SIZE,
+                                  brush=pg.mkBrush(255, 255, 255, 230))
         self.curve_plot.showGrid(y=True, alpha=0.2)
 
         self.trend_plot = pg.PlotWidget()
         self.trend_plot.setLabel("bottom", "Session # (this movement)")
         self.trend_plot.setLabel("left", "Mean error (% of hand size)")
-        self.trend_plot.addLegend(offset=(-10, 10))
+        self.trend_plot.addLegend(offset=(-10, 10), labelTextSize=LEGEND_SIZE)
         self.trend_plot.showGrid(y=True, alpha=0.2)
 
         self.table = QTableWidget(len(FINGERS), 4)
@@ -64,8 +88,10 @@ class ResultsPage(Page):
         sel.addWidget(button("← Back to patient", slot=lambda: self.navigate("home")))
 
         plots = QHBoxLayout()
-        plots.addWidget(card(self.curve_plot, muted("Part of the movement still missing, mean across repetitions. "
-                                   "Dashed line = threshold."),
+        plots.addWidget(card(self.curve_plot, muted(
+            "Part of the movement still missing, mean across repetitions. Thin line = the "
+            "patient, bold = moved by the glove, ▲ = the glove's actuator kicks in. Dashed "
+            "line = threshold."), self.kick_info,
                              title="Error through the movement", info="error"), 1)
         plots.addWidget(card(self.trend_plot, muted("Mean error per session of this movement "
                                                     "(lower = closer to the reference)."),
@@ -115,24 +141,66 @@ class ResultsPage(Page):
         frames = self.ctx.db.session_frames(sid)
         thr = session_threshold(s)
         units, hand = s["err_units"], s["hand_size_mm"]
-        self.curve_plot.setLabel("left", f"Error ({unit_label(units)})")
+        self.curve_plot.setLabel("left", "Still missing (% of movement)" if units == "move"
+                                 else f"Error ({unit_label(units)})")
         self.trend_plot.setLabel("left", f"Mean error ({unit_label(units)})")
 
-        # --- error vs progress, averaged across reps on a 0-100 grid
-        grid = np.linspace(0, 100, 101)
+        # --- how much of the movement is still missing, against time. x = % of the planned
+        # movement time; past 100 % the time is up and the glove finishes the movement.
+        # Thin line = the patient, bold = the glove moving the finger, ▲ = it kicks in.
+        duration = session_duration_s(s["speed_pct"])
+        x_of = lambda r: 100.0 * r["t_s"] / duration
+        reps = {}
+        for r in frames:
+            reps.setdefault(r["rep"], []).append(r)
+        x_max = max([100.0] + [x_of(rows[-1]) for rows in reps.values()])
+        grid = np.linspace(0, x_max, int(round(x_max)) + 1)
+        kicks = []
         for f in FINGERS:
-            curves = []
-            for rep in sorted({r["rep"] for r in frames}):
-                pts = [(r["progress"], r[f"err_{f}"]) for r in frames
-                       if r["rep"] == rep and r[f"err_{f}"] is not None]
+            curves, spans = [], []
+            for rep, rows in reps.items():
+                # position incl. the glove's part where it was stored, else the error
+                pts = [(x_of(r), 100.0 - r[f"pos_{f}"] if r[f"pos_{f}"] is not None
+                        else r[f"err_{f}"]) for r in rows]
+                pts = [(x, y) for x, y in pts if y is not None]
                 if len(pts) > 1:
                     x, y = np.array(pts).T
                     curves.append(np.interp(grid, x, y))
-            if curves:
-                self.curve_plot.plot(grid, np.mean(curves, axis=0),
-                                     pen=pg.mkPen(theme.FINGER_COLORS[f], width=2),
-                                     name=f.capitalize())
+                    spans += [(rep, a, b) for a, b in assist_spans(rows, f, x_of)]
+            if not curves:
+                continue
+            color = theme.FINGER_COLORS[f]
+            mean_curve = np.mean(curves, axis=0)
+            self.curve_plot.plot(grid, mean_curve, pen=pg.mkPen(color, width=2),
+                                 name=f.capitalize())
+            for rep, a, b in spans:
+                xs = np.concatenate([[a], grid[(grid > a) & (grid < b)], [max(b, a + 0.5)]])
+                self.curve_plot.plot(xs, np.interp(xs, grid, mean_curve),
+                                     pen=pg.mkPen(color, width=7, cap=Qt.RoundCap))
+            if spans:
+                kicks.append(f"{f} " + ", ".join(f"rep {rep} at {min(a, 100):.0f} %"
+                                                 + (" (time up)" if a >= 100 else "")
+                                                 for rep, a, _ in spans))
+                self.curve_plot.addItem(pg.ScatterPlotItem(
+                    x=[a for _, a, _ in spans],
+                    y=[float(np.interp(a, grid, mean_curve)) for _, a, _ in spans],
+                    symbol="t1", size=18, brush=color, pen=pg.mkPen(theme.TEXT, width=1.5),
+                    data=[f"{f.capitalize()}: glove kicked in, rep {rep}" for rep, _, _ in spans],
+                    hoverable=True, tip=lambda x, y, data: data))
         self.curve_plot.addLine(y=thr, pen=pg.mkPen(theme.TEXT, width=1, style=Qt.DashLine))
+        if x_max > 100:
+            self.curve_plot.addLine(x=100, pen=pg.mkPen(theme.MUTED, width=1, style=Qt.DotLine),
+                                    label="time up", labelOpts={"position": 0.95,
+                                                                "color": theme.MUTED})
+        # legend entries for the glove's part
+        self.curve_plot.plot([], [], pen=None, symbol="t1", symbolSize=14,
+                             symbolBrush=theme.MUTED, symbolPen=pg.mkPen(theme.TEXT, width=1.5),
+                             name="Glove kicks in")
+        self.curve_plot.plot([], [], pen=pg.mkPen(theme.MUTED, width=7),
+                             name="Moved by the glove")
+        self.curve_plot.setXRange(0, x_max, padding=0.02)
+        self.kick_info.setText("▲ Glove kicked in: " + ("; ".join(kicks) if kicks else
+                                                         "never in this session"))
 
         # --- trend across sessions of the same movement
         # (only sessions in the same units: older sessions were recorded in mm)

@@ -70,7 +70,7 @@ class ReferencePage(Page):
         self.plot = pg.PlotWidget()
         self.plot.setLabel("bottom", "Progress", units="%")
         self.plot.setLabel("left", "Wrist → fingertip")
-        self.plot.addLegend(offset=(-10, 10))
+        self.plot.addLegend(offset=(-10, 10), labelTextSize="14pt")
         self.plot.setMinimumHeight(190)
         self.review_info = muted("")
         self.video_row = QHBoxLayout()

@@ -47,6 +47,14 @@ class PatientDisplay(QWidget):
         self.fingers = FingerErrorPanel(compact=True)
         self.fingers.setMinimumHeight(140)
         self.fingers.hide()
+        self.legend = QLabel(
+            f"<span style='color:{theme.BAD}'>●</span> not there yet &nbsp;&nbsp; "
+            f"<span style='color:{theme.WARN}'>●</span> almost &nbsp;&nbsp; "
+            f"<span style='color:{theme.OK}'>●</span> movement done &nbsp;&nbsp; "
+            f"<span style='color:{theme.ASSIST}'>◯</span> glove helping")
+        self.legend.setAlignment(Qt.AlignCenter)
+        self.legend.setStyleSheet(f"font-size: 20px; color: {theme.MUTED};")
+        self.legend.hide()
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(40, 30, 40, 30)
@@ -57,6 +65,7 @@ class PatientDisplay(QWidget):
         lay.addWidget(self.status)
         lay.addWidget(self.progress)
         lay.addWidget(self.fingers)
+        lay.addWidget(self.legend)
 
         self.show_idle()
 
@@ -98,6 +107,7 @@ class PatientDisplay(QWidget):
         self._status_style()
         self.progress.reset()
         self.fingers.hide()
+        self.legend.hide()
 
     def show_movement(self, movement_id: str, mode: str, threshold: float | None = None,
                       reference=None, speed_pct: float = 100.0, hand: str | None = None):
@@ -128,6 +138,7 @@ class PatientDisplay(QWidget):
             self.fingers.show()
         else:
             self.fingers.hide()
+        self.legend.setVisible(mode == "session")
 
     def set_countdown(self, n: int):
         self.camera.set_countdown(n)

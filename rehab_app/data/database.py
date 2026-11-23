@@ -99,15 +99,19 @@ MIGRATIONS = {
     ],
     "session_frames": [(f"state_{f}", "TEXT") for f in FINGERS]
                       + [(f"cmd_{f}", "INTEGER") for f in FINGERS]
-                      + [("hand", "TEXT")],            # hand the camera saw: left / right
+                      + [("hand", "TEXT")]             # hand the camera saw: left / right
+                      # how far along the movement the finger was (0-100 %), the glove's
+                      # part included - err_* counts the patient's own movement only
+                      + [(f"pos_{f}", "REAL") for f in FINGERS],
     "videos": [("hand", "TEXT")],                      # hand recorded in the take / rep
 }
 
 ERR_COLS = [f"err_{f}" for f in FINGERS]
 STATE_COLS = [f"state_{f}" for f in FINGERS]
 CMD_COLS = [f"cmd_{f}" for f in FINGERS]
+POS_COLS = [f"pos_{f}" for f in FINGERS]
 FRAME_INSERT_COLS = ["rep", "t_s", "progress", "confidence", "hand_detected", *ERR_COLS,
-                     "err_overall", "corr_mask", *STATE_COLS, *CMD_COLS, "hand"]
+                     "err_overall", "corr_mask", *STATE_COLS, *CMD_COLS, "hand", *POS_COLS]
 
 
 # the last frame of each repetition (frames alias f)

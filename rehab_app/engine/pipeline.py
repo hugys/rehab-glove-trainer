@@ -176,7 +176,8 @@ class PipelineEngine(RehabEngine):
         # References recorded before hands were rotated upright are compared unrotated
         self._align = bool(reference.meta.get("aligned", False))
         self._axis = tc.MovementAxis(reference.data, self.geom)
-        self._best = np.zeros(len(FINGERS))        # furthest each finger got this repetition
+        self._best = np.zeros(len(FINGERS))        # furthest each finger got on its own
+        self._reached = np.zeros(len(FINGERS))     # furthest it got, the glove's part included
         self._recent: deque = deque(maxlen=tc.COMPLETION_MEDIAN)
         self._frozen = np.full(len(FINGERS), np.nan)   # error when the glove took over
         self._target = reference.data[-1]          # fully completed pose of the exercise
@@ -214,7 +215,8 @@ class PipelineEngine(RehabEngine):
                 taken = own & np.array([s == "assisting" for s in states])
                 self._frozen = np.where(taken, err, self._frozen)
                 err = np.where(np.isnan(self._frozen), err, self._frozen)
-                completion = np.where(self._axis.moving, self._best, np.nan)
+                self._reached = np.fmax(self._reached, np.clip(completion, 0.0, 1.0))
+                completion = np.where(self._axis.moving, self._reached, np.nan)
                 err_pct = {f: float(e * 100.0) for f, e in zip(FINGERS, err)}
                 reach = np.linalg.norm(pose[list(self.geom.tip_rows)], axis=1)
                 moves = {f: servo_motion.plan_move(self._ref.movement_id, f, reach[i],
