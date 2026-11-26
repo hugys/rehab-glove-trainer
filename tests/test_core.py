@@ -486,3 +486,53 @@ def test_position_keeps_the_gloves_part_but_error_does_not():
             break
     assert fr.finger_completion_pct["ring"] > 85      # the glove got it there...
     assert fr.finger_error_pct["ring"] > 25           # ...which is not the patient's doing
+
+
+class _Fed(MockEngine):
+    """Mock hand with a zoom factor: zoom = the hand moving towards the camera."""
+    zoom = 1.0
+
+    def _to_pixels(self, pose_mm):
+        px = super()._to_pixels(pose_mm)
+        centre = np.array([320.0, 240.0, 0.0])
+        return centre + (px - centre) * self.zoom
+
+
+def _session_reach(mount, still_frames, zoom_during):
+    ls = LandmarkSet.from_preset("12")
+    eng = _Fed(ls)
+    eng._rng = np.random.default_rng(0)
+    eng.camera_mount = mount
+    for _ in range(40):
+        eng.preview_frame()
+    ref = _record(eng, "open_fist")
+    for _ in range(still_frames):
+        eng.preview_frame()
+    eng.start_session(ref, SessionParams(100, 15, None, 30.0, 4.0, 10.0))
+    eng.zoom = zoom_during
+    frames = [eng.session_frame(i / 30) for i in range(1, 60)]
+    return ref, frames
+
+
+def test_stand_fixes_the_hand_size_measured_in_the_countdown():
+    ref, frames = _session_reach("stand", 40, 1.0)
+    assert ref.meta["size_2d"] and ref.meta["size_fixed"] == [True]
+    assert all(f.size_fixed for f in frames)
+    _, frames = _session_reach("stand", 5, 1.0)        # hand hardly seen in the countdown
+    assert not any(f.size_fixed for f in frames)       # -> measured continuously instead
+    _, frames = _session_reach("handheld", 40, 1.0)
+    assert not any(f.size_fixed for f in frames)
+
+
+def test_handheld_size_follows_the_distance_but_stand_does_not():
+    """Hand-held, a hand that comes 30 % closer still measures the same; on a stand the
+    size is fixed, so the same change shows up (the hand must stay at its distance)."""
+    def span(frames):
+        f = [x for x in frames if x.landmarks is not None][-1]
+        return float(np.linalg.norm(f.landmarks[1]))
+    _, near = _session_reach("handheld", 40, 1.3)
+    _, same = _session_reach("handheld", 40, 1.0)
+    assert span(near) == pytest.approx(span(same), rel=0.03)
+    _, near = _session_reach("stand", 40, 1.3)
+    _, same = _session_reach("stand", 40, 1.0)
+    assert span(near) == pytest.approx(1.3 * span(same), rel=0.03)

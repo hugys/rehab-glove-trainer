@@ -90,6 +90,16 @@ INFO: dict[str, str] = {
     "time_assist": (
         "<b>Time glove assisting</b><br>Share of the tracked time in which the glove was moving "
         "the finger because it had stalled."),
+    "camera_mount": (
+        "<b>Camera is hand-held / on a stand</b><br>The camera measures the hand's size "
+        "(wrist to middle knuckle) to make hands at any distance comparable.<br><br>"
+        "<b>Hand-held:</b> the distance keeps changing, so the size is measured continuously "
+        "and smoothed over about a third of a second.<br><br><b>On a stand:</b> more accurate. "
+        "The size is measured once, during the 3-2-1 countdown, while the hand is held still "
+        "in the start position, and stays fixed for that recording. Keep the hand at the same "
+        "distance from the camera until the recording ends. If the hand was not still or not "
+        "visible in the countdown, the app says so and measures continuously for that "
+        "recording."),
     "landmarks": (
         "<b>Landmark set</b><br>How many points on the hand are tracked. 12 = the team's "
         "original set; 15 adds the knuckles. References must be recorded with the same set "

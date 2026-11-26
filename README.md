@@ -45,6 +45,10 @@ python main.py --engine mock        # simulated hand (no camera)
 python main.py --landmarks 15       # 15-point set (default 12)
 ```
 
+- **Hand-held or on a stand:** *Settings → Camera & video → Camera is*. Hand-held: the hand
+  size (wrist to middle knuckle in the picture) is measured continuously. On a stand: it is
+  measured once in the countdown, while the hand is held still, and fixed for the
+  recording, which is more accurate.
 - **Phone as camera:** in **Settings → Camera & video**, turn off *Mirror the preview* to
   see the same picture as on the phone, and use *Rotate image* if it appears sideways.
 - **Camera permission (macOS):** the first run asks for permission. If the camera stays

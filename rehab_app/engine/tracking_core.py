@@ -78,8 +78,16 @@ class Geometry:
 # 1. Coordinate transforms
 # =============================================================================
 
+def palm_length(pts21: np.ndarray, use_z: bool = False) -> float:
+    """Hand size as the camera sees it: wrist -> middle-finger knuckle, in pixels. In the
+    image plane by default; use_z=True is the original script's 3-D length (noisier, kept
+    for references that were recorded with it)."""
+    d = np.asarray(pts21[MIDDLE_FINGER_MCP], dtype=float) - np.asarray(pts21[WRIST], dtype=float)
+    return float(np.linalg.norm(d if use_z else d[:2]))
+
+
 def normalize_pose(pts21: np.ndarray, geom: Geometry, mirror: bool, scale: bool,
-                   align: bool = False) -> np.ndarray:
+                   align: bool = False, size: float | None = None) -> np.ndarray:
     """(21, 3) pixel-scaled landmarks -> (K, 3) wrist-relative, optionally hand-size
     normalised, rotated upright and x-mirrored, reduced to the key landmarks.
 
@@ -89,8 +97,8 @@ def normalize_pose(pts21: np.ndarray, geom: Geometry, mirror: bool, scale: bool,
     pts = np.array(pts21, dtype=float, copy=True)
     pts -= pts[WRIST]
     if scale:
-        size = np.linalg.norm(pts[MIDDLE_FINGER_MCP])
-        pts /= max(size, 1e-6)
+        # size: hand size to divide by (pixels); None = this frame's own 3-D palm length
+        pts /= max(np.linalg.norm(pts[MIDDLE_FINGER_MCP]) if size is None else size, 1e-6)
     if align:
         x, y = pts[MIDDLE_FINGER_MCP, :2]
         a = np.arctan2(x, -y)                    # angle of the knuckle away from straight up

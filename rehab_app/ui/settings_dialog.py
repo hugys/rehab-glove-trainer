@@ -61,6 +61,10 @@ class SettingsDialog(QDialog):
         file_row.addWidget(browse)
         self.mirror = QCheckBox("Mirror the preview (selfie view)")
         self.mirror.setChecked(ctx.mirror_preview())
+        self.mount = QComboBox()
+        self.mount.addItem("Hand-held (hand size measured continuously)", "handheld")
+        self.mount.addItem("On a stand (hand size measured once, in the countdown)", "stand")
+        self.mount.setCurrentIndex(max(0, self.mount.findData(ctx.camera_mount())))
         self.rotation = QComboBox()
         for deg, label in ((0, "None"), (90, "90° clockwise"), (180, "180°"),
                            (270, "90° counter-clockwise")):
@@ -74,6 +78,7 @@ class SettingsDialog(QDialog):
         f2.addRow("", self.mirror)
         f2.addRow("", QLabel("Turn mirroring off for a phone's back camera to see the same "
                              "picture as on the phone's screen."))
+        f2.addRow(with_info("Camera is", "camera_mount"), self.mount)
         f2.addRow("Rotate image", self.rotation)
         f2.addRow("", QLabel("Use when the picture appears sideways or upside down, e.g. a "
                              "phone held upright. Applies to tracking and recorded videos."))
@@ -157,6 +162,7 @@ class SettingsDialog(QDialog):
             "camera_source": src, "camera_file": self.video_file.text().strip(),
             "mirror_preview": "1" if self.mirror.isChecked() else "0",
             "camera_rotation": str(self.rotation.currentData()),
+            "camera_mount": self.mount.currentData(),
             "record_videos": "1" if self.record.isChecked() else "0",
             "stall_move_eps_pct": f"{self.eps.value():g}", "complete_tol_move_pct": f"{self.tol.value():g}",
             "servo_enabled": "1" if self.servo_on.isChecked() else "0",
@@ -167,6 +173,9 @@ class SettingsDialog(QDialog):
         for k, v in values.items():
             db.set_setting(k, v)
         ctx.engine.rotation = ctx.camera_rotation()
+        ctx.engine.camera_mount = ctx.camera_mount()
+        if ctx.patient_display:
+            ctx.patient_display.hold_still = ctx.camera_mount() == "stand"
         ctx.worker.camera_source = camera_source_from_settings(db)
         if ctx.worker.camera_source != old_source:
             ctx.worker.close_camera()

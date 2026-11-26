@@ -45,6 +45,10 @@ class AppContext:
         except ValueError:
             return 0
 
+    def camera_mount(self) -> str:
+        """'handheld' or 'stand' (see RehabEngine.camera_mount)."""
+        return "stand" if self.db.get_setting("camera_mount", "handheld") == "stand" else "handheld"
+
     def affected_hand(self) -> str:
         p = self.patient()
         return p["affected_hand"] if p else "left"

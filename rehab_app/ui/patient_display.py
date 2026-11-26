@@ -44,6 +44,7 @@ class PatientDisplay(QWidget):
         self._status_style()
         self.progress = MovementProgressBar(height=64)
         self._before_wrong: tuple | None = None   # status to restore after "Wrong hand"
+        self.hold_still = False                   # camera on a stand: size measured in countdown
         self.fingers = FingerErrorPanel(compact=True)
         self.fingers.setMinimumHeight(140)
         self.fingers.hide()
@@ -142,7 +143,8 @@ class PatientDisplay(QWidget):
 
     def set_countdown(self, n: int):
         self.camera.set_countdown(n)
-        self.status.setText(f"Starting in {n}…" if n > 0 else "Go!")
+        self.status.setText((f"Hold your hand still - starting in {n}…" if self.hold_still
+                             else f"Starting in {n}…") if n > 0 else "Go!")
         if n == 0:
             self.camera.set_countdown(None)
 

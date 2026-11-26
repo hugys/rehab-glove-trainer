@@ -252,6 +252,8 @@ class ReferencePage(Page):
 
     def on_countdown(self, n):
         self.camera.set_countdown(n if n > 0 else None)
+        self.camera.set_banner("Measuring hand size - hold the hand still"
+                               if n > 0 and self.ctx.camera_mount() == "stand" else None)
 
     def on_take_started(self, take, total):
         self.take_label.setText(f"Recording take {take} of {total}")

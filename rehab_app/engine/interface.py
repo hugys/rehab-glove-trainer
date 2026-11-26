@@ -63,6 +63,7 @@ class FrameResult:
     assist_state: dict[str, str] | None = None     # idle / moving / assisting / done
     assist_cmd: dict[str, int] | None = None       # +1 CW (flex) / -1 CCW (extend) / 0 hold
     servo_moves: dict | None = None                # finger -> hardware.servo_motion.ServoMove
+    size_fixed: bool = False                       # hand size was measured once and fixed
     finishing: bool = False                        # movement time is over; the glove is
                                                    # completing the unfinished fingers
 
@@ -102,6 +103,9 @@ class RehabEngine(ABC):
     def __init__(self, landmark_set: LandmarkSet):
         self.landmark_set = landmark_set
         self.rotation = 0          # camera image rotation, degrees clockwise (0/90/180/270)
+        # "handheld": hand size measured continuously (the distance to the hand changes);
+        # "stand": measured once while the hand is held still in the countdown, then fixed
+        self.camera_mount = "handheld"
 
     # ---- camera ------------------------------------------------------------
     @abstractmethod

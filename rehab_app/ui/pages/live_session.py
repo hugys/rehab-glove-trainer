@@ -49,6 +49,7 @@ class LiveSessionPage(Page):
         self._prev_states: dict[str, str] = {}
         self._tally = HandTally()
         self._wrong_logged = False
+        self._size_logged = False
 
         self.title_lbl = heading("")
         self.subtitle = muted("")
@@ -215,6 +216,7 @@ class LiveSessionPage(Page):
         self._prev_states = {}
         self._tally.reset()
         self._wrong_logged = False
+        self._size_logged = False
         self.progress.reset()
         self.progress.set_color(theme.ACCENT)
         self._update_buttons()
@@ -273,6 +275,11 @@ class LiveSessionPage(Page):
         if not frame.new_measurement:
             return
         self._tally.add(frame)
+        if (self.ctx.camera_mount() == "stand" and not frame.size_fixed
+                and not self._size_logged):
+            self._size_logged = True
+            self._event(f"  Rep {self.rep + 1}: hand size not measured in the countdown (hand "
+                        f"not still / not in view) - measured continuously", theme.WARN)
         if self.camera.wrong_hand() and not self._wrong_logged:
             self._wrong_logged = True
             self._event(f"  Rep {self.rep + 1}: wrong hand - the camera sees the {frame.hand} "
@@ -311,6 +318,8 @@ class LiveSessionPage(Page):
 
     def on_countdown(self, n):
         self.camera.set_countdown(n if n > 0 else None)
+        self.camera.set_banner("Measuring hand size - hold the hand still"
+                               if n > 0 and self.ctx.camera_mount() == "stand" else None)
 
     def on_rep_done(self, video, duration):
         if not self._running:

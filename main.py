@@ -89,6 +89,8 @@ def main(argv=None) -> int:
     ctx.patient_display = PatientDisplay(landmark_set)
     ctx.patient_display.camera.mirror = ctx.mirror_preview()
     engine.rotation = ctx.camera_rotation()
+    engine.camera_mount = ctx.camera_mount()
+    ctx.patient_display.hold_still = engine.camera_mount == "stand"
     worker.start()
 
     win = MainWindow(ctx)
