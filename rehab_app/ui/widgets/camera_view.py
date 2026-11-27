@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ...config import LandmarkSet
 from .. import theme
+from ..hands import wrong_hand_text
 
 
 class CameraView(QWidget):
@@ -22,6 +23,8 @@ class CameraView(QWidget):
         self._banner: str | None = None
         self._recording = False
         self._active = False
+        self._hand: str | None = None
+        self.expected_hand: str | None = None   # set by the page: shows "Wrong hand" if not
         self.mirror = True          # selfie view: what patients expect to see
         self.placeholder = "Camera off"
         self.setMinimumSize(360, 270)
@@ -32,6 +35,7 @@ class CameraView(QWidget):
         self._active = True
         self._recording = recording
         self._detected = frame.hand_detected
+        self._hand = frame.hand if frame.hand_detected else None
         self._pts = frame.landmarks_px if frame.hand_detected else None
         if self._pts is not None and self.mirror:
             self._pts = np.column_stack([1.0 - self._pts[:, 0], self._pts[:, 1]])
@@ -57,8 +61,12 @@ class CameraView(QWidget):
         self._active = False
         self._image = None
         self._pts = None
+        self._hand = None
         self._countdown = None
         self.update()
+
+    def wrong_hand(self) -> bool:
+        return bool(self._hand and self.expected_hand and self._hand != self.expected_hand)
 
     # ---- painting ------------------------------------------------------------
     def _target_rect(self) -> QRectF:
@@ -109,8 +117,22 @@ class CameraView(QWidget):
             p.setFont(QFont(self.font().family(), 11, QFont.Bold))
             p.drawText(QRectF(r.right() - 90, r.top() + 12, 60, 20), Qt.AlignRight, "REC")
 
+        # which hand the camera sees (top left)
+        if self._hand:
+            text = f"{self._hand.capitalize()} hand"
+            p.setFont(QFont(self.font().family(), 12, QFont.Bold))
+            tw = p.fontMetrics().horizontalAdvance(text) + 20
+            chip = QRectF(r.left() + 10, r.top() + 10, tw, 26)
+            p.setPen(Qt.NoPen)
+            p.setBrush(theme.qcolor(theme.BAD if self.wrong_hand() else "#000000", 170))
+            p.drawRoundedRect(chip, 6, 6)
+            p.setPen(QColor("white"))
+            p.drawText(chip, Qt.AlignCenter, text)
+
         if self._active and not self._detected:
             self._draw_banner(p, r, "Hand not detected - keep the hand in view", theme.WARN)
+        elif self.wrong_hand():
+            self._draw_banner(p, r, wrong_hand_text(self.expected_hand), theme.BAD)
         elif self._banner:
             self._draw_banner(p, r, self._banner, theme.ACCENT)
 

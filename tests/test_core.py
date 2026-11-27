@@ -119,9 +119,11 @@ def test_database_roundtrip(tmp_path):
 
     sid = db.create_session(pid, "open_fist", rid, "15", 50, 10, 2, stall_window_s=1.5)
     row = (1, 0.5, 10.0, 0.9, 1, 5, 6, 7, 15, 12, 9, 0b11000,
-           "done", "moving", "moving", "assisting", "idle", 0, 0, 0, 1, 0)
+           "done", "moving", "moving", "assisting", "idle", 0, 0, 0, 1, 0, "left",
+           95, 94, 93, 85, 88)
     assert len(row) == len(FRAME_INSERT_COLS)
-    db.add_frames(sid, [row] * 4)
+    db.add_frames(sid, [row] * 3 + [row[:22] + ("right",) + row[23:]])
+    assert db.rep_hands(sid) == {1: "left"}           # majority of the rep
     summ = db.session_summary(sid)
     assert summ["mean"]["ring"] == pytest.approx(15)
     assert summ["pct_over"]["ring"] == pytest.approx(100)
@@ -221,6 +223,7 @@ def test_reference_follows_clinician_speed(speed):
     reference stretched to the session duration set by the speed."""
     ls = LandmarkSet.from_preset("12")
     eng = MockEngine(ls)
+    eng._rng = np.random.default_rng(0)       # the mock drops 1 % of detections at random
     ref = _record(eng)
     eng.start_session(ref, SessionParams(speed, 10, 90, 1, 4, 8))
     t = 2.0
@@ -267,7 +270,7 @@ def test_hand_size_optional_and_legacy_mm_sessions(tmp_path):
     assert db.get_patient(pid)["hand_size_known"] == 0
     sid = db.create_session(pid, "open_fist", None, "12", 100, 12.0, 1)
     s = db.get_session(sid)
-    assert s["err_units"] == "pct" and session_threshold(s) == 12.0 and s["threshold_mm"] == 0
+    assert s["err_units"] == "move" and session_threshold(s) == 12.0 and s["threshold_mm"] == 0
     # a session from before the change: mm units, threshold in threshold_mm
     db.conn.execute("UPDATE sessions SET err_units = 'mm', threshold_mm = 10 WHERE id = ?", (sid,))
     assert session_threshold(db.get_session(sid)) == 10
@@ -279,3 +282,274 @@ def test_fmt_err():
     assert fmt_err(10.0, 90) == "10.0 % (9.0 mm)"
     assert fmt_err(7.5, 90, "mm") == "7.5 mm"
     assert fmt_err(None) == fmt_err(float("nan")) == "--"
+    assert fmt_err(25.0, 90, "move") == "25.0 %"       # % of movement: no mm
+
+
+def _axis_setup():
+    """Reference that opens one finger along a straight line: start curled, end stretched."""
+    geom = tc.Geometry.from_landmark_set(LandmarkSet.from_preset("12"))
+    data = np.zeros((tc.N_PROGRESS, 12, 3))
+    start, end = np.array([0.0, -0.5, 0.0]), np.array([0.0, -1.5, 0.0])
+    rows = list(geom.finger_rows[1])                  # index finger
+    for k, t in enumerate(np.linspace(0, 1, tc.N_PROGRESS)):
+        data[k, rows] = start + (end - start) * t
+    return geom, data, rows, start, end
+
+
+def test_completion_is_along_the_movement_axis():
+    geom, data, rows, start, end = _axis_setup()
+    axis = tc.MovementAxis(data, geom)
+    i = 1
+    assert axis.moving[i] and not axis.moving[0]      # thumb doesn't move: no axis
+    cur = data[-1].copy()
+    assert axis.completion(cur)[i] == pytest.approx(1)          # fully stretched
+    cur[rows] = start + (end - start) * 0.5           # halfway open
+    assert axis.completion(cur)[i] == pytest.approx(0.5)
+    cur[rows] += np.array([0.3, 0.0, 0.7])            # sideways / depth: not counted
+    assert axis.completion(cur)[i] == pytest.approx(0.5)
+    assert np.isnan(axis.completion(cur)[0])
+
+
+def test_still_finger_error_is_scaled_drift():
+    geom, data, *_ = _axis_setup()
+    axis = tc.MovementAxis(data, geom)
+    cur = data[-1].copy()
+    cur[list(geom.finger_rows[0])] += np.array([tc.STILL_ERR_SCALE, 0, 0])   # thumb drifts
+    drift = axis.drift(cur)
+    assert drift[0] == pytest.approx(1.0) and np.isnan(drift[1])
+
+
+def test_error_is_the_part_of_the_movement_not_reached(tmp_path):
+    """Halfway open = 50 % error, fully open = 0 %, whatever the timing; a repetition's
+    error is what is left at its end."""
+    from rehab_app.engine.pipeline import Measurement, PipelineEngine
+    ls = LandmarkSet.from_preset("12")
+
+    class Scripted(PipelineEngine):
+        flex = 1.0
+        other_hand = False                              # the reference is the opposite hand
+        def open_camera(self, source=None): pass
+        def close_camera(self): pass
+        def _measure(self, elapsed_s):
+            from rehab_app.engine.mock_engine import hand_pose21
+            px = hand_pose21({f: self.flex for f in FINGERS})
+            px[:, 1] *= -1                              # image y-down
+            if self.other_hand:
+                px[:, 0] *= -1
+            return Measurement(image=None, detected=True, overlay_px=px[:, :2], confidence=1.0,
+                               hand="left", new_pts21=px, new_t=elapsed_s)
+
+    eng = Scripted(ls)
+    eng.other_hand = True
+    eng.start_reference("open_fist", 4.0, "right", 90.0)
+    eng.start_take(0)
+    for i in range(121):
+        eng.flex = 1.0 - i / 120                        # fist -> open
+        eng.reference_frame(i / 30)
+    eng.end_take()
+    ref = eng.finish_reference()
+    eng.other_hand = False
+
+    def rep(flexes):
+        eng.start_session(ref, SessionParams(100, 15, None, 1.0, 4.0, 10.0))
+        for i, eng.flex in enumerate(flexes):
+            fr = eng.session_frame(4.0 * i / len(flexes))
+        return fr
+    fr = rep([1.0] * 30)                                # never opens
+    assert fr.finger_error_pct["index"] > 90
+    fr = rep([1.0] * 20 + [0.0] * 10)                   # late, but fully open
+    assert fr.finger_error_pct["index"] < 5 and fr.overall_error_pct < 5
+    fr = rep([1.0] * 5 + [0.0] * 5 + [1.0] * 20)        # opened fully, then closed again
+    assert fr.finger_error_pct["index"] < 5             # the furthest point counts
+    half = rep([1.0] * 10 + [0.5] * 20)                 # opens only part of the way
+    assert 20 < half.finger_error_pct["index"] < 80
+
+    db = Database(tmp_path / "t.db")
+    pid = db.add_patient("A", "left")
+    sid = db.create_session(pid, "open_fist", None, "12", 100, 15, 2)
+    def row(rep_no, t, e):
+        return (rep_no, t, 25 * t, 1.0, 1, e, e, e, e, e, e, 0, *["moving"] * 5, *[0] * 5, "left",
+                *[100 - e] * 5)
+    db.add_frames(sid, [row(1, 0, 100), row(1, 2, 60), row(1, 4, 10),     # ends at 10 %
+                        row(2, 0, 100), row(2, 4, 50)])                    # ends at 50 %
+    summ = db.session_summary(sid)
+    assert summ["mean"]["index"] == pytest.approx(30) and summ["overall"] == pytest.approx(30)
+    assert summ["pct_over"]["index"] == pytest.approx(50)          # 1 of 2 reps above 15 %
+    assert db.list_sessions(pid)[0]["mean_err"] == pytest.approx(30)
+
+
+def test_align_rotates_hand_upright():
+    geom = tc.Geometry.from_landmark_set(LandmarkSet.from_preset("12"))
+    pts = np.random.default_rng(1).normal(size=(21, 3))
+    pts[0] = 0
+    pts[9] = [0, -2, 0]                               # knuckle straight up (image y-down)
+    upright = tc.normalize_pose(pts, geom, False, True, align=True)
+    a = np.radians(35)
+    rot = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+    tilted = pts.copy()
+    tilted[:, :2] = pts[:, :2] @ rot.T                # same hand, tilted 35 degrees
+    assert np.allclose(tc.normalize_pose(tilted, geom, False, True, align=True), upright)
+    assert np.allclose(upright, tc.normalize_pose(pts, geom, False, True))   # already upright
+
+
+def test_real_hand_keeps_mediapipe_label():
+    from rehab_app.engine.mediapipe_engine import real_hand
+    assert real_hand("Left") == "left" and real_hand("Right") == "right"
+    assert real_hand(None) is None
+
+
+def test_mock_session_reports_hand_and_completion():
+    ls = LandmarkSet.from_preset("12")
+    eng = MockEngine(ls)
+    ref = _record(eng, "open_fist")
+    assert ref.meta["aligned"] and ref.source_hand == "right"
+    eng.start_session(ref, SessionParams(100, 15, None, 1.0, 4.0, 10.0))
+    frames = [eng.session_frame(t / 30) for t in range(1, 120)]
+    hands = {f.hand for f in frames if f.hand}
+    assert hands == {"left"}                          # affected = the other hand
+    last = [f for f in frames if f.finger_completion_pct][-1]
+    assert last.finger_completion_pct["index"] > 80   # the mock index finger opens fully
+
+
+def test_hand_tally():
+    from types import SimpleNamespace
+    from rehab_app.ui.hands import HandTally
+    t = HandTally()
+    for h in ("left", "left", "right", None):
+        t.add(SimpleNamespace(new_measurement=True, hand=h))
+    assert t.recorded() == "left"
+    assert t.label("left") == "left hand ✓"
+    assert t.label("right").startswith("⚠ LEFT hand")
+
+
+def test_time_up_assists_unfinished_fingers_and_freezes_their_error():
+    """No stall within the movement time, but some fingers are not at the end when it is
+    over: the glove finishes them, and what it does is not credited to the patient."""
+    ls = LandmarkSet.from_preset("12")
+    eng = MockEngine(ls)
+    ref = _record(eng, "open_fist")
+    dur = config.session_duration_s(100)
+    eng.start_session(ref, SessionParams(100, 15, None, 30.0, 4.0, 10.0))   # stall time 30 s
+    fr = None
+    for i in range(int(dur * 30)):
+        fr = eng.session_frame(i / 30)
+        assert "assisting" not in fr.assist_state.values() and not fr.finishing
+    before = dict(fr.finger_error_pct)
+    assert before["ring"] > 25                        # the mock ring finger stops halfway
+    t, started = dur, False
+    while t < dur + config.ASSIST_FINISH_MAX_S:
+        fr = eng.session_frame(t)
+        t += 1 / 30
+        started |= fr.assist_state["ring"] == "assisting" and fr.assist_cmd["ring"] == tc.CCW
+        if all(s == "done" for s in fr.assist_state.values()):
+            break
+    assert fr.finishing and started and fr.progress == 100
+    assert all(s == "done" for s in fr.assist_state.values())      # the glove finished it
+    assert fr.finger_error_pct["ring"] == pytest.approx(before["ring"], abs=3)
+    assert fr.finger_error_pct["index"] < 10          # done by the patient: no assist needed
+
+
+def test_stall_assist_force():
+    geom = tc.Geometry.from_landmark_set(LandmarkSet.from_preset("12"))
+    pose = np.zeros((12, 3))
+    pose[geom.tip_rows, 1] = -1.0
+    target = pose.copy()
+    target[geom.tip_rows[1], 1] = -0.5                # only the index is not at the target
+    sa = tc.StallAssist(geom, window_s=5.0)
+    cmds, states = sa.update(pose, target, 0.0)
+    assert states[1] == "idle"
+    cmds, states = sa.update(pose, target, 0.1, force=True)
+    assert states[1] == "assisting" and cmds[1] == tc.CW
+    assert states[0] == "done" and cmds[0] == tc.HOLD
+
+
+def test_assist_spans_on_the_graph_axis():
+    from rehab_app.ui.pages.results import assist_spans
+    rows = [{"t_s": t, "state_ring": st} for t, st in
+            [(0, "moving"), (1, "assisting"), (2, "assisting"), (3, "done"), (4, "done")]]
+    assert assist_spans(rows, "ring", lambda r: 25.0 * r["t_s"]) == [(25.0, 75.0)]
+    rows = [{"t_s": t, "state_ring": st} for t, st in [(4, "moving"), (5, "assisting"),
+                                                       (6, "assisting")]]
+    assert assist_spans(rows, "ring", lambda r: 25.0 * r["t_s"]) == [(125.0, 150.0)]
+
+
+def test_position_keeps_the_gloves_part_but_error_does_not():
+    ls = LandmarkSet.from_preset("12")
+    eng = MockEngine(ls)
+    ref = _record(eng, "open_fist")
+    eng.start_session(ref, SessionParams(100, 15, None, 1.0, 4.0, 10.0))
+    fr, t = None, 0.0
+    while t < 4.0 + config.ASSIST_FINISH_MAX_S:
+        fr = eng.session_frame(t)
+        t += 1 / 30
+        if t > 4.0 and all(s == "done" for s in fr.assist_state.values()):
+            break
+    assert fr.finger_completion_pct["ring"] > 85      # the glove got it there...
+    assert fr.finger_error_pct["ring"] > 25           # ...which is not the patient's doing
+
+
+class _Fed(MockEngine):
+    """Mock hand with a zoom factor: zoom = the hand moving towards the camera."""
+    zoom = 1.0
+
+    def _to_pixels(self, pose_mm):
+        px = super()._to_pixels(pose_mm)
+        centre = np.array([320.0, 240.0, 0.0])
+        return centre + (px - centre) * self.zoom
+
+
+def _session_reach(mount, still_frames, zoom_during):
+    ls = LandmarkSet.from_preset("12")
+    eng = _Fed(ls)
+    eng._rng = np.random.default_rng(0)
+    eng.camera_mount = mount
+    for _ in range(40):
+        eng.preview_frame()
+    ref = _record(eng, "open_fist")
+    for _ in range(still_frames):
+        eng.preview_frame()
+    eng.start_session(ref, SessionParams(100, 15, None, 30.0, 4.0, 10.0))
+    eng.zoom = zoom_during
+    frames = [eng.session_frame(i / 30) for i in range(1, 60)]
+    return ref, frames
+
+
+def test_stand_fixes_the_hand_size_measured_in_the_countdown():
+    ref, frames = _session_reach("stand", 40, 1.0)
+    assert ref.meta["size_2d"] and ref.meta["size_fixed"] == [True]
+    assert all(f.size_fixed for f in frames)
+    _, frames = _session_reach("stand", 5, 1.0)        # hand hardly seen in the countdown
+    assert not any(f.size_fixed for f in frames)       # -> measured continuously instead
+    _, frames = _session_reach("handheld", 40, 1.0)
+    assert not any(f.size_fixed for f in frames)
+
+
+def test_handheld_size_follows_the_distance_but_stand_does_not():
+    """Hand-held, a hand that comes 30 % closer still measures the same; on a stand the
+    size is fixed, so the same change shows up (the hand must stay at its distance)."""
+    def span(frames):
+        f = [x for x in frames if x.landmarks is not None][-1]
+        return float(np.linalg.norm(f.landmarks[1]))
+    _, near = _session_reach("handheld", 40, 1.3)
+    _, same = _session_reach("handheld", 40, 1.0)
+    assert span(near) == pytest.approx(span(same), rel=0.03)
+    _, near = _session_reach("stand", 40, 1.3)
+    _, same = _session_reach("stand", 40, 1.0)
+    assert span(near) == pytest.approx(1.3 * span(same), rel=0.03)
+
+
+def test_closed_fist_with_noisy_depth_is_not_at_the_end_position():
+    """A fist's depth estimate can be huge. It must not make the fingertips look further
+    from the wrist than an open hand (which marked every finger done before it moved)."""
+    geom = tc.Geometry.from_landmark_set(LandmarkSet.from_preset("12"))
+    fist = np.zeros((12, 3))
+    fist[geom.tip_rows, 1] = -0.5
+    fist[geom.tip_rows, 2] = 2.0                       # depth noise
+    open_hand = np.zeros((12, 3))
+    open_hand[geom.tip_rows, 1] = -1.5
+    assert np.all(tc.tip_reach(fist, geom) < tc.tip_reach(open_hand, geom))
+    sa = tc.StallAssist(geom, window_s=1.0)
+    _, states = sa.update(fist, open_hand, 0.0)
+    assert "done" not in states
+    cmds, states = sa.update(fist, open_hand, 0.1, force=True)
+    assert states == ["assisting"] * 5 and cmds == [tc.CCW] * 5     # extend

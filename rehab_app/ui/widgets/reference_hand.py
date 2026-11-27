@@ -69,7 +69,7 @@ class ReferenceHandView(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor(theme.SURFACE))
-        r = QRectF(self.rect()).adjusted(12, 12, -12, -28)
+        r = QRectF(self.rect()).adjusted(12, 12, -12, -34)
         if self._data is None:
             p.setPen(QColor(theme.MUTED))
             p.drawText(r, Qt.AlignCenter, "No reference recorded")
@@ -107,7 +107,7 @@ class ReferenceHandView(QWidget):
         for pt in pts:
             p.drawEllipse(pt, 5, 5)
         p.setPen(QColor(theme.MUTED))
-        p.setFont(QFont(self.font().family(), 12))
-        p.drawText(QRectF(r.left(), r.bottom() + 6, r.width(), 18), Qt.AlignCenter,
+        p.setFont(QFont(self.font().family(), 15))
+        p.drawText(QRectF(r.left(), r.bottom() + 6, r.width(), 24), Qt.AlignCenter,
                    f"{self.caption} · {prog * 100:.0f}%")
         p.end()

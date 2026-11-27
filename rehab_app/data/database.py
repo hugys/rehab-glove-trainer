@@ -92,19 +92,31 @@ MIGRATIONS = {
         ("hand_size_mm", "REAL"), ("stall_window_s", "REAL"), ("stall_move_eps_pct", "REAL"),
         ("complete_tol_pct", "REAL"), ("start_grace_s", "REAL"), ("servo", "TEXT"),
         # err_units: 'mm' = sessions recorded before errors moved to % of hand size
-        # (err_* and threshold_mm in mm); 'pct' = err_* and threshold_pct in % of hand size.
+        # (err_* and threshold_mm in mm); 'pct' = err_* and threshold_pct in % of hand size;
+        # 'move' = err_* and threshold_pct in % of the movement (error along the movement axis).
         ("err_units", "TEXT NOT NULL DEFAULT 'mm'"), ("threshold_pct", "REAL"),
         ("complete_tol_move_pct", "REAL"),
     ],
     "session_frames": [(f"state_{f}", "TEXT") for f in FINGERS]
-                      + [(f"cmd_{f}", "INTEGER") for f in FINGERS],
+                      + [(f"cmd_{f}", "INTEGER") for f in FINGERS]
+                      + [("hand", "TEXT")]             # hand the camera saw: left / right
+                      # how far along the movement the finger was (0-100 %), the glove's
+                      # part included - err_* counts the patient's own movement only
+                      + [(f"pos_{f}", "REAL") for f in FINGERS],
+    "videos": [("hand", "TEXT")],                      # hand recorded in the take / rep
 }
 
 ERR_COLS = [f"err_{f}" for f in FINGERS]
 STATE_COLS = [f"state_{f}" for f in FINGERS]
 CMD_COLS = [f"cmd_{f}" for f in FINGERS]
+POS_COLS = [f"pos_{f}" for f in FINGERS]
 FRAME_INSERT_COLS = ["rep", "t_s", "progress", "confidence", "hand_detected", *ERR_COLS,
-                     "err_overall", "corr_mask", *STATE_COLS, *CMD_COLS]
+                     "err_overall", "corr_mask", *STATE_COLS, *CMD_COLS, "hand", *POS_COLS]
+
+
+# the last frame of each repetition (frames alias f)
+LAST_FRAME = ("f.t_s = (SELECT MAX(t_s) FROM session_frames l WHERE l.session_id = f.session_id"
+              " AND l.rep = f.rep)")
 
 
 def _now() -> str:
@@ -113,7 +125,7 @@ def _now() -> str:
 
 def session_threshold(s) -> float:
     """The session's error threshold in the same units as its err_* columns."""
-    return s["threshold_pct"] if s["err_units"] == "pct" else s["threshold_mm"]
+    return s["threshold_pct"] if s["err_units"] in ("pct", "move") else s["threshold_mm"]
 
 
 def corr_mask_from(correction: dict[str, bool] | None) -> int:
@@ -283,16 +295,16 @@ class Database:
     def create_session(self, patient_id: int, movement_id: str, reference_id: int | None,
                        landmark_preset: str, speed_pct: float, threshold_pct: float,
                        reps: int, notes: str = "", **assist) -> int:
-        """New sessions store errors in % of hand size. threshold_mm (NOT NULL in the
-        original schema) gets the mm equivalent, or 0 if the hand size wasn't measured."""
+        """New sessions store errors in % of the movement. threshold_mm (NOT NULL in the
+        original schema) has no mm equivalent any more and gets 0."""
         hand = assist.get("hand_size_mm")
         cur = self.conn.execute(
             "INSERT INTO sessions(patient_id, movement_id, reference_id, landmark_preset, speed_pct,"
             " threshold_mm, threshold_pct, err_units, reps, started_at, notes, hand_size_mm,"
             " stall_window_s, stall_move_eps_pct, complete_tol_move_pct, start_grace_s, servo)"
-            " VALUES (?,?,?,?,?,?,?,'pct',?,?,?,?,?,?,?,?,?)",
+            " VALUES (?,?,?,?,?,?,?,'move',?,?,?,?,?,?,?,?,?)",
             (patient_id, movement_id, reference_id, landmark_preset, speed_pct,
-             threshold_pct * hand / 100 if hand else 0.0, threshold_pct,
+             0.0, threshold_pct,
              reps, _now(), notes, hand, assist.get("stall_window_s"),
              assist.get("stall_move_eps_pct"), assist.get("complete_tol_move_pct"),
              assist.get("start_grace_s"), assist.get("servo")))
@@ -314,7 +326,8 @@ class Database:
     def list_sessions(self, patient_id: int) -> list[sqlite3.Row]:
         return self.conn.execute(
             "SELECT s.*, "
-            " (SELECT AVG(err_overall) FROM session_frames f WHERE f.session_id = s.id) AS mean_err,"
+            " (SELECT AVG(err_overall) FROM session_frames f WHERE f.session_id = s.id"
+            f"   AND (s.err_units != 'move' OR {LAST_FRAME})) AS mean_err,"
             " (SELECT COUNT(DISTINCT rep) FROM session_frames f WHERE f.session_id = s.id) AS reps_done"
             " FROM sessions s WHERE patient_id = ? ORDER BY s.id DESC", (patient_id,)).fetchall()
 
@@ -327,24 +340,40 @@ class Database:
             (session_id,)).fetchall()
 
     def session_summary(self, session_id: int) -> dict:
-        """Mean error per finger, % of tracked frames above threshold, % of frames assisted."""
+        """Mean error per finger, % above threshold, % of frames assisted.
+
+        err_units 'move': a repetition's error is what was still missing at its end (its
+        last frame), so mean = average over repetitions and "above threshold" = share of
+        repetitions that ended above it. Older units: averages over all tracked frames."""
         s = self.get_session(session_id)
+        per_rep = f" AND {LAST_FRAME}" if s["err_units"] == "move" else ""
         cols = ", ".join(f"AVG({c}) AS {c}" for c in ERR_COLS)
         over = ", ".join(f"AVG(CASE WHEN {c} > :thr THEN 1.0 ELSE 0.0 END) AS over_{c}"
                          for c in ERR_COLS)
         assist = ", ".join(f"AVG(CASE WHEN state_{f} = 'assisting' THEN 1.0 ELSE 0.0 END) AS as_{f}"
                            for f in FINGERS)
-        row = self.conn.execute(
-            f"SELECT {cols}, AVG(err_overall) AS err_overall, {over}, {assist}, COUNT(*) AS n "
-            "FROM session_frames WHERE session_id = :sid AND hand_detected = 1",
-            {"sid": session_id, "thr": session_threshold(s)}).fetchone()
+        args = {"sid": session_id, "thr": session_threshold(s)}
+        where = "FROM session_frames f WHERE session_id = :sid AND hand_detected = 1"
+        err = self.conn.execute(
+            f"SELECT {cols}, AVG(err_overall) AS err_overall, {over} {where}{per_rep}",
+            args).fetchone()
+        row = self.conn.execute(f"SELECT {assist}, COUNT(*) AS n {where}", args).fetchone()
         return {
-            "mean": {f: row[f"err_{f}"] for f in FINGERS},
-            "overall": row["err_overall"],
-            "pct_over": {f: (row[f"over_err_{f}"] or 0) * 100 for f in FINGERS},
+            "mean": {f: err[f"err_{f}"] for f in FINGERS},
+            "overall": err["err_overall"],
+            "pct_over": {f: (err[f"over_err_{f}"] or 0) * 100 for f in FINGERS},
             "pct_assist": {f: (row[f"as_{f}"] or 0) * 100 for f in FINGERS},
             "n_frames": row["n"],
         }
+
+    def rep_hands(self, session_id: int) -> dict[int, str | None]:
+        """rep -> the hand the camera saw in most of that repetition (None = unknown)."""
+        out: dict[int, str | None] = {}
+        for r in self.conn.execute(
+                "SELECT rep, hand, COUNT(*) AS n FROM session_frames WHERE session_id = ? "
+                "AND hand IS NOT NULL GROUP BY rep, hand ORDER BY rep, n DESC", (session_id,)):
+            out.setdefault(r["rep"], r["hand"])
+        return out
 
     def delete_session(self, session_id: int) -> None:
         self.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
@@ -353,12 +382,13 @@ class Database:
     # ---- videos ------------------------------------------------------------
     def add_video(self, patient_id: int, kind: str, movement_id: str, path: str,
                   take_or_rep: int, duration_s: float | None = None,
-                  reference_id: int | None = None, session_id: int | None = None) -> int:
+                  reference_id: int | None = None, session_id: int | None = None,
+                  hand: str | None = None) -> int:
         cur = self.conn.execute(
             "INSERT INTO videos(patient_id, kind, reference_id, session_id, take_or_rep,"
-            " movement_id, path, duration_s, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            " movement_id, path, duration_s, created_at, hand) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (patient_id, kind, reference_id, session_id, take_or_rep, movement_id, str(path),
-             duration_s, _now()))
+             duration_s, _now(), hand))
         self.conn.commit()
         return cur.lastrowid
 

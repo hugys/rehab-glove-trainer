@@ -17,6 +17,10 @@ MODEL_PATH = ASSETS_DIR / "models" / "hand_landmarker.task"
 # --- Fingers -----------------------------------------------------------------
 FINGERS: list[str] = ["thumb", "index", "middle", "ring", "pinky"]
 
+
+def other_hand(hand: str) -> str:
+    return "left" if hand == "right" else "right"
+
 # --- Landmark presets --------------------------------------------------------
 # Each entry is (MediaPipe index, name). Names must start with a finger name
 # (or be "wrist") so finger groups can be derived automatically.
@@ -133,7 +137,7 @@ COUNTDOWN_S = 3
 SPEED_MIN_PCT = 25
 SPEED_MAX_PCT = 200
 SPEED_DEFAULT_PCT = 100
-THRESHOLD_DEFAULT_PCT = 11.0  # error threshold, % of hand size (~10 mm on a 90 mm hand)
+THRESHOLD_DEFAULT_PCT = 15.0  # error threshold, % of the movement
 REPS_DEFAULT = 5
 TAKES_DEFAULT = 3             # reference takes averaged into one reference
 VIDEO_FPS = 30
@@ -154,6 +158,11 @@ STALL_MOVE_EPS_PCT = 4.0      # % of hand size: less fingertip movement within t
                               # (upper limit - lowered automatically at slow speeds)
 COMPLETE_TOL_MOVE_PCT = 10.0  # % of EACH finger's own movement in the reference: this close
                               # to the end position (or past it) = "movement complete"
+
+
+# When the movement time is over and a finger has not reached the end position, the glove
+# finishes the movement. The repetition is extended by at most this long for that.
+ASSIST_FINISH_MAX_S = 6.0
 
 
 def session_duration_s(speed_pct: float) -> float:

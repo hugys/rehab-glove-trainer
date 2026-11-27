@@ -4,8 +4,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                               QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                               QMessageBox, QPushButton, QVBoxLayout)
+                               QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QMessageBox, QPushButton, QTabWidget, QVBoxLayout, QWidget)
 
 from .. import config
 from ..config import LANDMARK_PRESETS
@@ -14,10 +14,7 @@ from .context import AppContext
 from .widgets import with_info
 
 
-def _group(title: str, form: QFormLayout) -> QGroupBox:
-    g = QGroupBox(title)
-    g.setLayout(form)
-    return g
+FIELD_WIDTH = 520          # narrowest the field column gets at the dialog's minimum width
 
 
 class SettingsDialog(QDialog):
@@ -25,7 +22,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.ctx = ctx
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(780)
         db = ctx.db
 
         # --- engine
@@ -61,12 +58,29 @@ class SettingsDialog(QDialog):
         file_row.addWidget(browse)
         self.mirror = QCheckBox("Mirror the preview (selfie view)")
         self.mirror.setChecked(ctx.mirror_preview())
+        self.mount = QComboBox()
+        self.mount.addItem("Hand-held", "handheld")
+        self.mount.addItem("On a stand", "stand")
+        self.mount.setCurrentIndex(max(0, self.mount.findData(ctx.camera_mount())))
+        self.rotation = QComboBox()
+        for deg, label in ((0, "None"), (90, "90° clockwise"), (180, "180°"),
+                           (270, "90° counter-clockwise")):
+            self.rotation.addItem(label, deg)
+        self.rotation.setCurrentIndex(max(0, self.rotation.findData(ctx.camera_rotation())))
         self.record = QCheckBox("Save a video of every reference take and session repetition")
         self.record.setChecked(ctx.record_videos())
         f2 = QFormLayout()
         f2.addRow("Source", self.camera)
         f2.addRow("Video file", file_row)
         f2.addRow("", self.mirror)
+        f2.addRow("", QLabel("Turn mirroring off for a phone's back camera to see the same "
+                             "picture as on the phone's screen."))
+        f2.addRow(with_info("Camera is", "camera_mount"), self.mount)
+        f2.addRow("", QLabel("On a stand is more accurate: the hand size is measured once, "
+                             "while the hand is held still in the countdown."))
+        f2.addRow("Rotate image", self.rotation)
+        f2.addRow("", QLabel("Use when the picture appears sideways or upside down, e.g. a "
+                             "phone held upright. Applies to tracking and recorded videos."))
         f2.addRow("", self.record)
         f2.addRow("Video folder", QLabel(str(config.VIDEO_DIR)))
 
@@ -118,15 +132,24 @@ class SettingsDialog(QDialog):
                 item = f.itemAt(i, QFormLayout.FieldRole)
                 if item and isinstance(item.widget(), QLabel):
                     item.widget().setWordWrap(True)
+                    # form layouts give wrapped labels one line's height; reserve all lines
+                    item.widget().setMinimumWidth(FIELD_WIDTH)
+                    item.widget().setMinimumHeight(item.widget().heightForWidth(FIELD_WIDTH))
                     item.widget().setObjectName("muted")
 
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.accepted.connect(self._save)
         bb.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
-        for title, f in (("Tracking engine", f1), ("Camera & video", f2),
+        tabs = QTabWidget()
+        for title, f in (("Camera && video", f2), ("Tracking engine", f1),
                          ("Glove assist tuning", f3), ("Glove connection", f4), ("Other", f5)):
-            lay.addWidget(_group(title, f))
+            page = QWidget()
+            col = QVBoxLayout(page)
+            col.addLayout(f)
+            col.addStretch()
+            tabs.addTab(page, title)
+        lay.addWidget(tabs)
         lay.addWidget(bb)
 
     def _browse(self):
@@ -146,6 +169,8 @@ class SettingsDialog(QDialog):
             "engine_choice": self.engine.currentData(), "landmark_preset": self.preset.currentData(),
             "camera_source": src, "camera_file": self.video_file.text().strip(),
             "mirror_preview": "1" if self.mirror.isChecked() else "0",
+            "camera_rotation": str(self.rotation.currentData()),
+            "camera_mount": self.mount.currentData(),
             "record_videos": "1" if self.record.isChecked() else "0",
             "stall_move_eps_pct": f"{self.eps.value():g}", "complete_tol_move_pct": f"{self.tol.value():g}",
             "servo_enabled": "1" if self.servo_on.isChecked() else "0",
@@ -155,6 +180,10 @@ class SettingsDialog(QDialog):
         old_source = ctx.worker.camera_source
         for k, v in values.items():
             db.set_setting(k, v)
+        ctx.engine.rotation = ctx.camera_rotation()
+        ctx.engine.camera_mount = ctx.camera_mount()
+        if ctx.patient_display:
+            ctx.patient_display.hold_still = ctx.camera_mount() == "stand"
         ctx.worker.camera_source = camera_source_from_settings(db)
         if ctx.worker.camera_source != old_source:
             ctx.worker.close_camera()

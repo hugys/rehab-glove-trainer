@@ -219,22 +219,28 @@ class EngineWorker(QThread):
     def _record_step(self, job):
         elapsed = time.perf_counter() - job["t0"]
         done = elapsed >= job["duration"]
-        elapsed = min(elapsed, job["duration"])
         if job["kind"] == "reference":
+            elapsed = min(elapsed, job["duration"])
             frame = self.engine.reference_frame(elapsed)
         else:
+            # Time is up but a finger has not reached the end position: the engine now
+            # assists it, and the repetition runs on until the glove has finished it.
+            elapsed = min(elapsed, job["duration"] + config.ASSIST_FINISH_MAX_S)
             frame = self.engine.session_frame(elapsed)
+            unfinished = any(s != "done" for s in (frame.assist_state or {}).values())
+            if done and unfinished and elapsed < job["duration"] + config.ASSIST_FINISH_MAX_S:
+                done = False
         if self._recorder is not None:
             self._recorder.write(frame.image, elapsed)
         self.frame_ready.emit(frame, self._phase, elapsed, job["duration"])
         if not done:
             return job
 
-        video = self._close_recorder(job["duration"])
+        video = self._close_recorder(max(elapsed, job["duration"]))
         if job["kind"] == "session":
             self.engine.finish_session()
             self._set_phase(PHASE_PREVIEW)
-            self.rep_done.emit(video, job["duration"])
+            self.rep_done.emit(video, max(elapsed, job["duration"]))
             return None
 
         try:

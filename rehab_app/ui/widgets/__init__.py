@@ -5,6 +5,7 @@ from .info import Collapsible, InfoIcon, header_info, with_info
 from .movement_demo import MovementDemo
 from .progress import MovementProgressBar
 from .reference_hand import ReferenceHandView
+from .video_clip import VideoClip
 
 __all__ = ["CameraView", "Collapsible", "InfoIcon", "header_info", "with_info", "FingerErrorPanel", "HandComparisonView", "MovementDemo",
-           "MovementProgressBar", "ReferenceHandView"]
+           "MovementProgressBar", "ReferenceHandView", "VideoClip"]

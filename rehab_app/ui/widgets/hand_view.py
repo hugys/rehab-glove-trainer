@@ -63,11 +63,16 @@ class HandComparisonView(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor(theme.SURFACE))
-        r = QRectF(self.rect()).adjusted(10, 28, -10, -6)
+        r = QRectF(self.rect()).adjusted(10, 34, -10, -6)
+        p.setFont(QFont(self.font().family(), 14, QFont.Bold))
+        x = 10.0
+        for text, color in (("Front view", theme.MUTED), ("- - reference", "#e8743b"),
+                            ("— patient", theme.ACCENT)):
+            p.setPen(QColor(color))
+            p.drawText(QRectF(x, 4, self.width() - x, 26), Qt.AlignLeft | Qt.AlignVCenter, text)
+            x += p.fontMetrics().horizontalAdvance(text) + 22
         p.setPen(QColor(theme.MUTED))
         p.setFont(QFont(self.font().family(), 11))
-        p.drawText(QRectF(10, 4, self.width() - 20, 20), Qt.AlignLeft,
-                   "Front view    orange dashed = reference    blue = patient")
         self._update_scale(r)
         if self._ref is not None:
             self._draw(p, self._ref, r, theme.qcolor("#e8743b", 200), 2.5, True)

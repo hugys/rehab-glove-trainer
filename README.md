@@ -6,14 +6,22 @@ MediaPipe script (not included in this repo; its logic is ported into `rehab_app
 - **Reference:** guided **4 s** recordings of the **unaffected** hand. 3 takes are averaged
   into one reference by default (1–5 under **Advanced**).
 - **Live sessions:** the **affected** hand at a speed the clinician picks.
-- **Per-finger error:** distance from the reference, for diagnosis only, in **% of hand
-  size** (wrist crease to middle-finger knuckle, measured by the camera), so no ruler is
-  needed. If the patient's hand size is entered, mm is shown next to it.
+- **Per-finger error:** for diagnosis only, measured along one axis: the movement itself.
+  0 % = the finger's start pose in the reference, 100 % = its end pose (opening a fist:
+  fully stretched). The error is the part of that movement the finger did not reach, in
+  **% of the movement** (halfway open = 50 %); timing does not count. Hands are rotated
+  upright before comparing, so a tilted hand does not count as error.
+- **Which hand:** every screen names the hand (e.g. "unaffected (right) hand"). The camera
+  view shows the hand it sees and a red **Wrong hand** banner if it is not the expected
+  one; the hand actually recorded is stored for every take and repetition.
 - **Info icons:** every setting or number that may not be obvious has a small **i**. Hover
   over it or click it for a plain-language explanation. All the texts are in
   `rehab_app/ui/info_text.py`.
 - **Stall-triggered glove assist:** if a finger stops moving for a time *t* that the
   physician sets, the glove's motor for that finger drives it to the end position.
+  The same happens to any finger that is not at the end position when the movement time
+  is over: the repetition runs on (up to 6 s) until the glove has finished it. The error
+  counts only the patient's own movement, not what the glove did.
 - **Video:** every reference take and session repetition is recorded as MP4 and can be
   played back in the app.
 - **Storage:** SQLite, with CSV export.
@@ -37,6 +45,12 @@ python main.py --engine mock        # simulated hand (no camera)
 python main.py --landmarks 15       # 15-point set (default 12)
 ```
 
+- **Hand-held or on a stand:** *Settings → Camera & video → Camera is*. Hand-held: the hand
+  size (wrist to middle knuckle in the picture) is measured continuously. On a stand: it is
+  measured once in the countdown, while the hand is held still, and fixed for the
+  recording, which is more accurate.
+- **Phone as camera:** in **Settings → Camera & video**, turn off *Mirror the preview* to
+  see the same picture as on the phone, and use *Rotate image* if it appears sideways.
 - **Camera permission (macOS):** the first run asks for permission. If the camera stays
   black, allow your terminal (or Python) under **System Settings → Privacy & Security →
   Camera**, then restart the app.

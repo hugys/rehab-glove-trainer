@@ -4,11 +4,13 @@ Pure numpy - no camera, no MediaPipe - so both the real engine and the mock
 engine share exactly the same pipeline:
 
   REFERENCE : 4 s take(s) -> keep key landmarks -> wrist = (0,0,0) -> divide by
-              hand size -> mirror -> re-index to progress 0-100 % -> mean of takes
-              + tolerance band
+              hand size -> rotate hand upright -> mirror -> re-index to progress
+              0-100 % -> mean of takes + tolerance band
   SESSION   : progress = elapsed / duration (duration from clinician speed)
-              ERROR  (diagnostic): per-finger distance to the reference at the
-                                   same progress
+              ERROR  (diagnostic): per finger, along the movement's own axis
+                                   (0 % = start pose, 100 % = end pose of the
+                                   reference): the part of the movement the
+                                   patient has not reached, whatever the timing
               ASSIST (drives motors): StallAssist - finger has not moved for
                                    `stall_window_s` and is not at the target yet
 
@@ -42,6 +44,13 @@ STALL_EPS_FLOOR = 0.01         # never call less movement than tracking jitter "
 STALL_EPS_FRACTION = 0.5       # "stopped" = under half of what the reference moves in t
 STALL_LAG = 0.05               # ...and at least 5 % of the movement behind the reference
 MIN_REACH_SPAN = 0.02          # fingers the reference barely moves: no lag check
+# Error along the movement axis:
+MIN_AXIS_SPAN = 0.15           # fingers the reference moves less than this (hand units) have no
+                               # usable axis: they should stay put, and their error is the
+                               # distance from the reference relative to STILL_ERR_SCALE
+STILL_ERR_SCALE = 0.25         # a still finger 1/4 hand length away from the reference = 100 %
+COMPLETION_MEDIAN = 5          # completion = median of the last results, so one jittery frame
+                               # cannot count as "the furthest the finger got"
 # Per-finger completion (used with complete_tol_move):
 COMPLETE_TOL_FLOOR = 0.02      # never demand more precision than tracking can deliver
 STILL_FINGER_SPAN = 0.05       # reference moves the finger less than this = finger should
@@ -69,14 +78,32 @@ class Geometry:
 # 1. Coordinate transforms
 # =============================================================================
 
-def normalize_pose(pts21: np.ndarray, geom: Geometry, mirror: bool, scale: bool) -> np.ndarray:
+def palm_length(pts21: np.ndarray, use_z: bool = False) -> float:
+    """Hand size as the camera sees it: wrist -> middle-finger knuckle, in pixels. In the
+    image plane by default; use_z=True is the original script's 3-D length (noisier, kept
+    for references that were recorded with it)."""
+    d = np.asarray(pts21[MIDDLE_FINGER_MCP], dtype=float) - np.asarray(pts21[WRIST], dtype=float)
+    return float(np.linalg.norm(d if use_z else d[:2]))
+
+
+def normalize_pose(pts21: np.ndarray, geom: Geometry, mirror: bool, scale: bool,
+                   align: bool = False, size: float | None = None) -> np.ndarray:
     """(21, 3) pixel-scaled landmarks -> (K, 3) wrist-relative, optionally hand-size
-    normalised and x-mirrored, reduced to the key landmarks."""
+    normalised, rotated upright and x-mirrored, reduced to the key landmarks.
+
+    align (added for the app): rotate in the image plane so wrist -> middle-finger knuckle
+    points straight up (-y). A hand held at a slight angle then still lines up with the
+    reference, so overlay and error compare finger movement, not how the hand was tilted."""
     pts = np.array(pts21, dtype=float, copy=True)
     pts -= pts[WRIST]
     if scale:
-        size = np.linalg.norm(pts[MIDDLE_FINGER_MCP])
-        pts /= max(size, 1e-6)
+        # size: hand size to divide by (pixels); None = this frame's own 3-D palm length
+        pts /= max(np.linalg.norm(pts[MIDDLE_FINGER_MCP]) if size is None else size, 1e-6)
+    if align:
+        x, y = pts[MIDDLE_FINGER_MCP, :2]
+        a = np.arctan2(x, -y)                    # angle of the knuckle away from straight up
+        c, s = np.cos(a), np.sin(a)
+        pts[:, :2] = pts[:, :2] @ np.array([[c, -s], [s, c]])
     if mirror:
         pts[:, 0] *= -1
     return pts[list(geom.key_landmarks)]
@@ -87,6 +114,15 @@ def landmarks_to_pixels(hand_landmarks, width: int, height: int) -> np.ndarray:
     x/y scaled by frame size separately; z uses the width (MediaPipe convention)."""
     return np.array([[lm.x * width, lm.y * height, lm.z * width] for lm in hand_landmarks],
                     dtype=float)
+
+
+def tip_reach(pose: np.ndarray, geom: Geometry) -> np.ndarray:
+    """Wrist -> fingertip distance per finger, for (K, 3) or (P, K, 3) poses -> (5,) or (P, 5).
+
+    In the image plane only. The original script used the 3-D distance, but MediaPipe's
+    depth is so noisy on a curled hand that a closed fist could measure a longer reach than
+    an open hand - fingers then counted as "at the end position" before they had moved."""
+    return np.linalg.norm(pose[..., list(geom.tip_rows), :2], axis=-1)
 
 
 def resample_to_progress(times, poses, duration: float, n: int = N_PROGRESS) -> np.ndarray:
@@ -125,7 +161,7 @@ def build_reference(takes: list[np.ndarray], geom: Geometry):
     sigma = np.sqrt((dev ** 2).mean(axis=0))                    # (P, K)
     finger_sigma = np.stack([sigma[:, list(rows)].mean(axis=1) for rows in geom.finger_rows], axis=1)
     tolerance = np.maximum(TOL_FLOOR, TOL_SIGMAS * finger_sigma)
-    reach = np.linalg.norm(mean[:, list(geom.tip_rows), :], axis=-1)
+    reach = tip_reach(mean, geom)
     rom = reach.max(axis=0) - reach.min(axis=0)
     return mean, tolerance, rom
 
@@ -133,6 +169,48 @@ def build_reference(takes: list[np.ndarray], geom: Geometry):
 # =============================================================================
 # 3. Error metric (diagnostic only - never drives the servos)
 # =============================================================================
+
+class MovementAxis:
+    """Per finger, the straight line from the reference's start pose to its end pose
+    (all of the finger's tracked points together). Positions along it are the finger's
+    completion: 0 = start, 1 = end (e.g. fully stretched when opening a fist). Only this
+    one axis counts; sideways deviation is ignored.
+
+    Image plane only (x, y): MediaPipe's depth is far too noisy for this. Replaying real
+    recordings, a closed fist read as ~50 % open with depth included and ~0-20 % without.
+
+    completion(pose) -> (5,) 0-1 along the movement, NaN for still fingers
+    drift(pose)      -> (5,) for fingers the reference barely moves (< MIN_AXIS_SPAN): how far
+                        the finger is from the little path the reference takes (anywhere
+                        between its start and end pose, so timing doesn't count), relative
+                        to STILL_ERR_SCALE; NaN for moving fingers
+    """
+
+    def __init__(self, ref_data: np.ndarray, geom: Geometry):
+        self.geom = geom
+        self._rows = [list(r) for r in geom.finger_rows]
+        self._start = [ref_data[0, r, :2].ravel() for r in self._rows]
+        self._vec = [ref_data[-1, r, :2].ravel() - st for r, st in zip(self._rows, self._start)]
+        self.span = np.array([np.linalg.norm(v) for v in self._vec])
+        self.moving = self.span >= MIN_AXIS_SPAN
+
+    def completion(self, pose: np.ndarray) -> np.ndarray:
+        out = np.full(len(self._rows), np.nan)
+        for i, (r, st, v) in enumerate(zip(self._rows, self._start, self._vec)):
+            if self.moving[i]:
+                out[i] = float(np.dot(pose[r, :2].ravel() - st, v) / self.span[i] ** 2)
+        return out
+
+    def drift(self, pose: np.ndarray) -> np.ndarray:
+        out = np.full(len(self._rows), np.nan)
+        for i, (r, st, v) in enumerate(zip(self._rows, self._start, self._vec)):
+            if not self.moving[i]:
+                d = pose[r, :2].ravel() - st
+                t = np.clip(np.dot(d, v) / max(self.span[i] ** 2, 1e-12), 0.0, 1.0)
+                off = (d - t * v).reshape(-1, 2)            # per tracked point of the finger
+                out[i] = float(np.linalg.norm(off, axis=1).mean()) / STILL_ERR_SCALE
+        return out
+
 
 def finger_errors(ref_pose: np.ndarray, cur_pose: np.ndarray, geom: Geometry):
     """Both (K, 3). Returns err (5,) mean per-finger 3-D distance and direction (5,):
@@ -159,7 +237,9 @@ class StallAssist:
     target (within `complete_tol`), assist: drive it the rest of the way. Once assisting,
     keep going until done (motor-induced motion must not be read as the patient resuming).
 
-    update(cur_pose, target_pose, now, progress=None) -> (cmds, states)
+    update(cur_pose, target_pose, now, progress=None, force=False) -> (cmds, states)
+      force  : the movement time is over (added for the app) - every finger that has not
+               reached the end position is assisted now, stalled or not
       cmds   : 5 ints CW/CCW/HOLD (FINGERS order)
       states : 5 of "idle" (filling the window) / "moving" / "assisting" / "done"
 
@@ -237,13 +317,13 @@ class StallAssist:
         self._done = [False] * len(FINGERS)
         self._t_start = None
 
-    def update(self, cur_pose, target_pose, now: float, progress: float | None = None):
+    def update(self, cur_pose, target_pose, now: float, progress: float | None = None,
+               force: bool = False):
         if self._t_start is None:
             self._t_start = now
         in_grace = (now - self._t_start) < self.start_grace_s
-        tips = list(self.geom.tip_rows)
-        reach_cur = np.linalg.norm(cur_pose[tips], axis=1)
-        reach_tgt = np.linalg.norm(target_pose[tips], axis=1)
+        reach_cur = tip_reach(cur_pose, self.geom)
+        reach_tgt = tip_reach(target_pose, self.geom)
         cmds, states = [], []
         for i in range(len(FINGERS)):
             hist = self._history[i]
@@ -263,7 +343,8 @@ class StallAssist:
                 window_full = bool(hist) and (now - hist[0][0]) >= self.window_s * 0.95
                 spread = (max(r for _, r in hist) - min(r for _, r in hist)) if hist else 0.0
                 stopped = window_full and spread < self.eps[i]
-                if stopped and not in_grace and self._behind(i, reach_cur[i], progress):
+                if force or (stopped and not in_grace
+                             and self._behind(i, reach_cur[i], progress)):
                     self._assisting[i] = True
                 else:
                     cmds.append(HOLD)

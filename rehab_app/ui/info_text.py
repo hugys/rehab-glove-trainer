@@ -26,12 +26,14 @@ INFO: dict[str, str] = {
         "affected hand cannot keep up; raise it over the weeks as a measure of progress."),
     "reps": "<b>Repetitions</b><br>How many times the movement is performed in this session.",
     "threshold": (
-        "<b>Error threshold</b><br>A finger whose error is above this is shown red and counted "
-        "in “time above threshold” in the results.<br><br>For assessment only: it never moves "
-        "the glove. In % of hand size (10 % ≈ 9 mm on a 90 mm hand)."),
+        "<b>Error threshold</b><br>A finger that is still missing more than this share of the "
+        "movement is shown red; repetitions that end that way are counted as “above "
+        "threshold” in the results.<br><br>For assessment only: it never moves the glove."),
     "stall_time": (
         "<b>Stall time t</b><br>How long a finger may stop before the glove motor for that "
-        "finger takes over and moves it to the end position.<br><br>A finger only counts as "
+        "finger takes over and moves it to the end position. The glove also takes over any "
+        "finger that has not reached the end position when the movement time is over, and "
+        "the repetition runs on (up to 6 s) until it is there.<br><br>A finger only counts as "
         "stopped if it is also behind where the reference is at that moment, so a patient "
         "keeping pace at a slow speed is never interrupted."),
     "grace": (
@@ -51,14 +53,21 @@ INFO: dict[str, str] = {
         "2 % for the pinky in a precision grip. Fingers that should stay still during a "
         "movement must stay within 8 % of hand size."),
     "error": (
-        "<b>Error</b><br>Distance between the patient's finger and the healthy-hand reference "
-        "at the same point of the movement, averaged over the tracked points of that finger. "
-        "In % of hand size (mm in brackets if the hand size was entered). 0 = identical to "
-        "the reference.<br><br>For assessment only: the glove is driven by stalls, not by "
-        "error."),
+        "<b>Error</b><br>Measured along one axis only: the movement itself. For each finger, "
+        "0 % is where it starts in the healthy-hand reference and 100 % where it ends (for "
+        "opening a fist: fully stretched = 100 %). The error is the part of that movement the "
+        "finger did not reach. Timing and sideways wobble do not count.<br><br>Example: a "
+        "finger that only opens halfway → 50 % error. Fully stretched → 0 %. During a "
+        "repetition the bar starts at 100 % and shrinks as the finger gets further; what is "
+        "left at the end is the repetition's error. Only the patient's own movement counts: "
+        "when the glove takes a finger over, its error stays at what it was at that moment.<br><br>Fingers the reference keeps still "
+        "(e.g. the curled fingers when pointing) have no movement to measure along: for them, "
+        "100 % means being a quarter of the hand length away from where the reference keeps them."
+        "<br><br>For assessment only: the glove is driven by stalls, not by error."),
     "mean_error": (
-        "<b>Mean error</b><br>Average error of the five fingers, in % of hand size (mm in "
-        "brackets if the hand size was entered)."),
+        "<b>Mean error</b><br>Average error of the five fingers, in % of the movement. "
+        "Sessions recorded before this change were measured in % of hand size and are "
+        "labelled that way in the results."),
     "confidence": (
         "<b>Tracking confidence</b><br>How sure the camera's hand tracker is that it sees a "
         "hand, 0-100 %. Below about 80 % the measurements become unreliable: improve the "
@@ -75,11 +84,22 @@ INFO: dict[str, str] = {
         "<b>Range of motion</b><br>How far each fingertip travelled towards or away from the "
         "wrist during the reference."),
     "time_above": (
-        "<b>Time above threshold</b><br>Share of the tracked time in which the finger's error "
-        "was above the session's threshold."),
+        "<b>Above threshold</b><br>Share of the repetitions in which the finger ended with "
+        "more of the movement missing than the session's threshold. (Sessions recorded in "
+        "the older units: share of the tracked time above the threshold.)"),
     "time_assist": (
         "<b>Time glove assisting</b><br>Share of the tracked time in which the glove was moving "
         "the finger because it had stalled."),
+    "camera_mount": (
+        "<b>Camera is hand-held / on a stand</b><br>The camera measures the hand's size "
+        "(wrist to middle knuckle) to make hands at any distance comparable.<br><br>"
+        "<b>Hand-held:</b> the distance keeps changing, so the size is measured continuously "
+        "and smoothed over about a third of a second.<br><br><b>On a stand:</b> more accurate. "
+        "The size is measured once, during the 3-2-1 countdown, while the hand is held still "
+        "in the start position, and stays fixed for that recording. Keep the hand at the same "
+        "distance from the camera until the recording ends. If the hand was not still or not "
+        "visible in the countdown, the app says so and measures continuously for that "
+        "recording."),
     "landmarks": (
         "<b>Landmark set</b><br>How many points on the hand are tracked. 12 = the team's "
         "original set; 15 adds the knuckles. References must be recorded with the same set "

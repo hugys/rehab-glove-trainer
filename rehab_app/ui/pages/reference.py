@@ -16,19 +16,20 @@ from ... import config
 from ...config import MOVEMENTS, MOVEMENTS_BY_ID, REF_DURATION_S
 from ...data.video import video_path
 from .. import theme
+from ..hands import HandTally, hand_phrase
 from ..video_player import play_video
 from ..widgets import CameraView, Collapsible, MovementDemo, MovementProgressBar, with_info
 from .base import Page, button, card, heading, muted
 
 
 def fingertip_reach(ref, landmark_set, hand_size_mm: float | None) -> dict[str, np.ndarray]:
-    """Distance from wrist to each finger's most distal tracked point, per progress step:
+    """Distance in the picture from wrist to each finger's most distal tracked point, per step:
     mm if the hand size is known, otherwise % of hand size."""
     scale = (hand_size_mm if hand_size_mm else 100.0) if ref.units == "hand" else 1.0
     out = {}
     for f, rows in landmark_set.finger_groups().items():
         if rows:
-            out[f] = np.linalg.norm(ref.data[:, rows[-1], :], axis=1) * scale
+            out[f] = np.linalg.norm(ref.data[:, rows[-1], :2], axis=1) * scale   # as seen
     return out
 
 
@@ -40,6 +41,8 @@ class ReferencePage(Page):
         self._pending_ref = None
         self._pending_videos: list[str] = []
         self._warnings: list[str] = []
+        self._take_hands: list[str | None] = []    # hand the camera saw in each take
+        self._tally = HandTally()
         self._state = "ready"
 
         self.movement = QComboBox()
@@ -67,7 +70,7 @@ class ReferencePage(Page):
         self.plot = pg.PlotWidget()
         self.plot.setLabel("bottom", "Progress", units="%")
         self.plot.setLabel("left", "Wrist → fingertip")
-        self.plot.addLegend(offset=(-10, 10))
+        self.plot.addLegend(offset=(-10, 10), labelTextSize="14pt")
         self.plot.setMinimumHeight(190)
         self.review_info = muted("")
         self.video_row = QHBoxLayout()
@@ -138,7 +141,8 @@ class ReferencePage(Page):
         self.instruction.setText(m.instruction)
         self.demo.set_movement(m.id)
         if self.ctx.patient_display and self.isVisible():
-            self.ctx.patient_display.show_movement(m.id, "reference")
+            self.ctx.patient_display.show_movement(m.id, "reference",
+                                                   hand=self.ctx.healthy_hand())
         self._set_state("ready")
 
     def _discard_pending(self):
@@ -146,16 +150,20 @@ class ReferencePage(Page):
             if v:
                 Path(v).unlink(missing_ok=True)
         self._pending_ref, self._pending_videos, self._warnings = None, [], []
+        self._take_hands = []
 
     # ---- lifecycle -----------------------------------------------------------
     def on_enter(self, movement_id: str | None = None, **kwargs):
         if movement_id:
             self.movement.setCurrentIndex(self.movement.findData(movement_id))
         self.camera.mirror = self.ctx.mirror_preview()
-        self.hand_label.setText(f"<b>Use the UNAFFECTED ({self.ctx.healthy_hand()}) hand</b>")
+        self.camera.expected_hand = self.ctx.healthy_hand()
+        self.hand_label.setText(
+            f"<b>Use the {hand_phrase('unaffected', self.ctx.healthy_hand()).upper()}</b>")
         self._movement_changed()
         if self.ctx.patient_display:
-            self.ctx.patient_display.show_movement(self._movement_id(), "reference")
+            self.ctx.patient_display.show_movement(self._movement_id(), "reference",
+                                                   hand=self.ctx.healthy_hand())
         self.progress.reset()
         self.ctx.worker.open_camera()
 
@@ -185,7 +193,8 @@ class ReferencePage(Page):
         self._set_state("recording")
         self.take_label.setText(f"Get ready - take 1 of {n}")
         if self.ctx.patient_display:
-            self.ctx.patient_display.show_movement(self._movement_id(), "reference")
+            self.ctx.patient_display.show_movement(self._movement_id(), "reference",
+                                                   hand=self.ctx.healthy_hand())
         paths = ([video_path(self.ctx.patient_id, f"ref_{self._movement_id()}_take{i + 1}")
                   for i in range(n)] if self.ctx.record_videos() else [])
         self.ctx.worker.record_reference(self._movement_id(), self.ctx.healthy_hand(),
@@ -209,12 +218,15 @@ class ReferencePage(Page):
             return
         pid = self.ctx.patient_id
         ref = self._pending_ref
+        ref.meta["take_hands"] = list(self._take_hands)
         rid = self.ctx.db.save_reference(pid, ref)
         for i, v in enumerate(self._pending_videos):
             if v:
+                hand = self._take_hands[i] if i < len(self._take_hands) else None
                 self.ctx.db.add_video(pid, "reference", ref.movement_id, v, i + 1,
-                                      REF_DURATION_S, reference_id=rid)
+                                      REF_DURATION_S, reference_id=rid, hand=hand)
         self._pending_ref, self._pending_videos, self._warnings = None, [], []
+        self._take_hands = []
         self._set_state("ready")
         if self.ctx.patient_display:
             self.ctx.patient_display.set_status("Saved - well done!", theme.OK)
@@ -235,22 +247,32 @@ class ReferencePage(Page):
     def on_frame(self, frame, phase, elapsed, duration):
         self.camera.set_frame(frame, recording=phase == "reference")
         if phase == "reference":
+            self._tally.add(frame)
             self.progress.set_progress(frame.progress, elapsed, duration)
 
     def on_countdown(self, n):
         self.camera.set_countdown(n if n > 0 else None)
+        self.camera.set_banner("Measuring hand size - hold the hand still"
+                               if n > 0 and self.ctx.camera_mount() == "stand" else None)
 
     def on_take_started(self, take, total):
         self.take_label.setText(f"Recording take {take} of {total}")
+        self._tally.reset()
         self.progress.reset()
 
     def on_take_done(self, take, total, info, video):
         self._pending_videos.append(video)
+        expected = self.ctx.healthy_hand()
+        self._take_hands.append(self._tally.recorded())
+        hand_note = self._tally.label(expected)
         if info.get("warning"):
             self._warnings.append(f"Take {take}: {info['warning']}")
+        if self._tally.recorded() not in (None, expected):
+            self._warnings.append(f"Take {take} recorded the {self._tally.recorded().upper()} "
+                                  f"hand, but the reference needs the {expected} hand - redo.")
         if take < total:
-            self.take_label.setText(f"Take {take} done ({info['frames']} frames) - get ready for "
-                                    f"take {take + 1} of {total}")
+            self.take_label.setText(f"Take {take} done ({info['frames']} frames, {hand_note}) - "
+                                    f"get ready for take {take + 1} of {total}")
 
     def on_reference_done(self, ref, videos):
         self._pending_ref = ref
@@ -263,7 +285,11 @@ class ReferencePage(Page):
         for f, reach in fingertip_reach(ref, self.ctx.landmark_set, hand).items():
             self.plot.plot(ref.progress, reach, pen=pg.mkPen(theme.FINGER_COLORS[f], width=2),
                            name=f.capitalize())
-        info = [f"{ref.n_takes} take(s) averaged."]
+        expected = self.ctx.healthy_hand()
+        hands = ", ".join(f"take {i + 1}: {h or 'not identified'}{' ✓' if h == expected else ''}"
+                          for i, h in enumerate(self._take_hands))
+        info = [f"{ref.n_takes} take(s) averaged. Expected the {expected} hand - recorded: "
+                f"{hands}."]
         if ref.rom is not None:
             info.append("Fingertip range of motion: " + ", ".join(
                 (f"{f} {r * hand:.0f} mm" if hand else f"{f} {r * 100:.0f} %")
@@ -279,7 +305,8 @@ class ReferencePage(Page):
                 w.deleteLater()
         for i, v in enumerate(self._pending_videos):
             if v:
-                self.video_row.addWidget(button(f"▶ Video take {i + 1}",
+                h = self._take_hands[i] if i < len(self._take_hands) else None
+                self.video_row.addWidget(button(f"▶ Video take {i + 1}" + (f" ({h})" if h else ""),
                                                 slot=lambda _=False, p=v, n=i + 1:
                                                 play_video(p, f"Reference take {n}", self)))
         self.video_row.addStretch()

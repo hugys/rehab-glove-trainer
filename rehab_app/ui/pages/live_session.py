@@ -12,6 +12,7 @@ from ...data.video import video_path
 from ...hardware import servo_motion
 from ...hardware.servo_link import format_line
 from .. import theme
+from ..hands import HandTally, hand_phrase
 from ..video_player import play_video
 from ..units import fmt_err
 from ..widgets import (CameraView, FingerErrorPanel, HandComparisonView, MovementProgressBar,
@@ -46,6 +47,9 @@ class LiveSessionPage(Page):
         self._rep_err_n = 0
         self._rep_assisted: set[str] = set()
         self._prev_states: dict[str, str] = {}
+        self._tally = HandTally()
+        self._wrong_logged = False
+        self._size_logged = False
 
         self.title_lbl = heading("")
         self.subtitle = muted("")
@@ -88,10 +92,11 @@ class LiveSessionPage(Page):
         stats_card.layout().addLayout(stats)
         stats_card.layout().addWidget(self.servo_status)
         right.addWidget(stats_card)
-        legend = muted(f"Bars = distance from reference (diagnostic) · "
+        legend = muted(f"Bars = part of the movement still missing · "
                        f"<span style='color:{theme.ASSIST}'><b>ASSIST</b></span> = finger stalled, "
                        f"glove driving it")
-        legend.setWordWrap(False)
+        legend.setWordWrap(True)
+        legend.setStyleSheet("font-size: 16px;")
         right.addWidget(card(self.fingers, legend, title="Per finger", info="finger_panel"), 3)
         right.addWidget(card(self.hand), 2)
         right.addWidget(card(self.events, title="Repetitions & events (double-click ▶ to play video)"))
@@ -129,16 +134,17 @@ class LiveSessionPage(Page):
         self.title_lbl.setText(f"Session · {m.name}")
         p = self.ctx.patient()
         self.subtitle.setText(
-            f"{p['name']} · affected {p['affected_hand']} hand · speed {params.speed_pct:.0f}% "
-            f"({dur:.1f} s) · {reps} reps · "
-            f"threshold {fmt_err(params.threshold_pct, params.hand_size_mm)} · "
+            f"{p['name']} · {hand_phrase('affected', p['affected_hand'])} · "
+            f"speed {params.speed_pct:.0f}% ({dur:.1f} s) · {reps} reps · "
+            f"threshold {fmt_err(params.threshold_pct, units='move')} of movement · "
             f"assist after {params.stall_window_s:.1f} s stall (grace {params.start_grace_s:.1f} s)")
-        self.fingers.set_threshold(params.threshold_pct, params.hand_size_mm)
+        self.fingers.set_threshold(params.threshold_pct)
         self.fingers.clear()
         self.hand.set_poses(None, None)
         self.hand.reset_scale()
         self.progress.reset()
         self.camera.mirror = self.ctx.mirror_preview()
+        self.camera.expected_hand = self.ctx.affected_hand()
         self.v_rep.setText(f"0 / {reps}")
         self.v_err.setText("--")
         self.v_conf.setText("--")
@@ -147,7 +153,8 @@ class LiveSessionPage(Page):
         self._update_buttons()
         if self.ctx.patient_display:
             self.ctx.patient_display.show_movement(m.id, "session", params.threshold_pct,
-                                                   reference, params.speed_pct)
+                                                   reference, params.speed_pct,
+                                                   hand=self.ctx.affected_hand())
         self.ctx.worker.open_camera()
 
     def on_leave(self):
@@ -207,13 +214,16 @@ class LiveSessionPage(Page):
         self._rep_err_sum, self._rep_err_n = 0.0, 0
         self._rep_assisted = set()
         self._prev_states = {}
+        self._tally.reset()
+        self._wrong_logged = False
+        self._size_logged = False
         self.progress.reset()
         self.progress.set_color(theme.ACCENT)
         self._update_buttons()
         if self.ctx.patient_display:
             self.ctx.patient_display.show_movement(self.reference.movement_id, "session",
                                                    prm.threshold_pct, self.reference,
-                                                   prm.speed_pct)
+                                                   prm.speed_pct, hand=self.ctx.affected_hand())
         path = (video_path(self.ctx.patient_id, f"session{self.session_id}_rep{self.rep + 1}")
                 if self.ctx.record_videos() else None)
         self.ctx.worker.run_repetition(self.reference, prm, path)
@@ -264,10 +274,20 @@ class LiveSessionPage(Page):
 
         if not frame.new_measurement:
             return
+        self._tally.add(frame)
+        if (self.ctx.camera_mount() == "stand" and not frame.size_fixed
+                and not self._size_logged):
+            self._size_logged = True
+            self._event(f"  Rep {self.rep + 1}: hand size not measured in the countdown (hand "
+                        f"not still / not in view) - measured continuously", theme.WARN)
+        if self.camera.wrong_hand() and not self._wrong_logged:
+            self._wrong_logged = True
+            self._event(f"  Rep {self.rep + 1}: wrong hand - the camera sees the {frame.hand} "
+                        f"hand, the session needs the {self.ctx.affected_hand()} hand", theme.BAD)
         if frame.overall_error_pct is not None:
-            self.v_err.setText(fmt_err(frame.overall_error_pct, self.params.hand_size_mm))
-            self._rep_err_sum += frame.overall_error_pct
-            self._rep_err_n += 1
+            self.v_err.setText(fmt_err(frame.overall_error_pct, units="move"))
+            # the error only shrinks as the fingers get further: the last value is the rep's
+            self._rep_err_sum, self._rep_err_n = frame.overall_error_pct, 1
         states = frame.assist_state or {}
         moves = frame.servo_moves or {}
         triggered = [f for f, st in states.items()
@@ -275,8 +295,10 @@ class LiveSessionPage(Page):
         if triggered:
             # Stall of t seconds detected -> hand the planned moves to the servos
             msg = servo_motion.trigger([moves[f] for f in triggered if f in moves])
-            self._event(f"  Rep {self.rep + 1}: {', '.join(triggered)} stopped at "
-                        f"{frame.progress:.0f}% → {msg}", theme.ASSIST)
+            why = ("not finished when the time was up" if frame.finishing
+                   else f"stopped at {frame.progress:.0f}%")
+            self._event(f"  Rep {self.rep + 1}: {', '.join(triggered)} {why} → {msg}",
+                        theme.ASSIST)
             self._rep_assisted.update(triggered)
         for f, st in states.items():
             if st != self._prev_states.get(f):
@@ -286,14 +308,18 @@ class LiveSessionPage(Page):
         self._prev_states = dict(states)
         errs = frame.finger_error_pct or {}
         cmds = frame.assist_cmd or {}
+        pos = frame.finger_completion_pct or {}
         self._buffer.append((
             self.rep + 1, elapsed, frame.progress, frame.confidence, int(frame.hand_detected),
             *[errs.get(f) for f in FINGERS], frame.overall_error_pct,
             corr_mask_from(frame.correction),
-            *[states.get(f) for f in FINGERS], *[cmds.get(f) for f in FINGERS]))
+            *[states.get(f) for f in FINGERS], *[cmds.get(f) for f in FINGERS], frame.hand,
+            *[pos.get(f) for f in FINGERS]))
 
     def on_countdown(self, n):
         self.camera.set_countdown(n if n > 0 else None)
+        self.camera.set_banner("Measuring hand size - hold the hand still"
+                               if n > 0 and self.ctx.camera_mount() == "stand" else None)
 
     def on_rep_done(self, video, duration):
         if not self._running:
@@ -305,13 +331,16 @@ class LiveSessionPage(Page):
         self.ctx.db.add_frames(self.session_id, self._buffer)
         if video:
             self.ctx.db.add_video(self.ctx.patient_id, "session", self.reference.movement_id,
-                                  video, self.rep, duration, session_id=self.session_id)
+                                  video, self.rep, duration, session_id=self.session_id,
+                                  hand=self._tally.recorded())
         self._buffer = []
         mean = self._rep_err_sum / self._rep_err_n if self._rep_err_n else float("nan")
         assisted = ", ".join(sorted(self._rep_assisted, key=FINGERS.index)) or "none"
-        self._event(f"{'▶ ' if video else ''}Rep {self.rep}: mean error "
-                    f"{fmt_err(mean, self.params.hand_size_mm)} · "
-                    f"assisted: {assisted}", video=video or None)
+        hand = self._tally.label(self.ctx.affected_hand())
+        color = theme.BAD if hand.startswith("⚠") else None
+        self._event(f"{'▶ ' if video else ''}Rep {self.rep} ({hand}): error "
+                    f"{fmt_err(mean, units='move')} of movement · "
+                    f"assisted: {assisted}", color, video=video or None)
         self.v_rep.setText(f"{self.rep} / {self.reps}")
         pd = self.ctx.patient_display
         if self.rep >= self.reps:

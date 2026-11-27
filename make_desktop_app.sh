@@ -14,7 +14,7 @@ fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-cat > "$APP/Contents/MacOS/launcher" <<EOF
+cat > "$APP/Contents/Resources/run.sh" <<EOF
 #!/bin/bash
 cd "$PROJECT"
 mkdir -p data
@@ -27,7 +27,35 @@ if [ "\$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
 fi
 exec "$PROJECT/.venv/bin/python" main.py >> data/launcher.log 2>&1
 EOF
-chmod +x "$APP/Contents/MacOS/launcher"
+chmod +x "$APP/Contents/Resources/run.sh"
+
+# Native launcher that stays alive as the parent of Python. macOS grants camera access to
+# the "responsible" app: if the script exec'd Python directly, the process would become
+# python.org's Python.app, which macOS silently refuses (and never lists under Camera).
+# As a child of this launcher, Python's camera request is credited to Rehab Glove Trainer.
+LAUNCHER_SRC="$(mktemp -d)/launcher.c"
+cat > "$LAUNCHER_SRC" <<'C'
+#include <libgen.h>
+#include <limits.h>
+#include <mach-o/dyld.h>
+#include <spawn.h>
+#include <stdio.h>
+#include <sys/wait.h>
+extern char **environ;
+int main(void) {
+    char exe[PATH_MAX], script[PATH_MAX + 32];
+    uint32_t size = sizeof exe;
+    if (_NSGetExecutablePath(exe, &size) != 0) return 1;
+    snprintf(script, sizeof script, "%s/../Resources/run.sh", dirname(exe));
+    char *argv[] = {"/bin/bash", script, NULL};
+    pid_t pid;
+    if (posix_spawn(&pid, "/bin/bash", NULL, NULL, argv, environ) != 0) return 1;
+    int status;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+}
+C
+clang -O2 -arch arm64 -arch x86_64 -o "$APP/Contents/MacOS/launcher" "$LAUNCHER_SRC"
 
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -85,4 +113,9 @@ for size in (16, 32, 64, 128, 256, 512, 1024):
 PY
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 touch "$APP"
+# Ad-hoc signature: without one macOS can't identify the app for privacy permissions, so the
+# camera is refused silently and the app never shows up under Privacy & Security > Camera.
+codesign --force --deep --sign - "$APP"
+# Forget any earlier (silent) camera decision so the permission prompt appears on next launch
+tccutil reset Camera local.rehab-glove-trainer >/dev/null 2>&1 || true
 echo "Created: $APP"
