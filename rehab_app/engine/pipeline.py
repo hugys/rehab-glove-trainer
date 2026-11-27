@@ -212,8 +212,7 @@ class PipelineEngine(RehabEngine):
         self._params = params
         self._hand_mm = params.hand_size_mm or config.HAND_SIZE_DEFAULT_MM  # drawing only
         self._duration = config.session_duration_s(params.speed_pct)
-        tips = list(self.geom.tip_rows)
-        ref_reach = np.linalg.norm(reference.data[:, tips, :], axis=-1)   # (P, 5)
+        ref_reach = tc.tip_reach(reference.data, self.geom)               # (P, 5)
         self._assist = tc.StallAssist(self.geom, window_s=params.stall_window_s,
                                       move_eps=params.stall_move_eps_pct / 100.0,
                                       start_grace_s=params.start_grace_s,
@@ -267,7 +266,7 @@ class PipelineEngine(RehabEngine):
                 self._reached = np.fmax(self._reached, np.clip(completion, 0.0, 1.0))
                 completion = np.where(self._axis.moving, self._reached, np.nan)
                 err_pct = {f: float(e * 100.0) for f, e in zip(FINGERS, err)}
-                reach = np.linalg.norm(pose[list(self.geom.tip_rows)], axis=1)
+                reach = tc.tip_reach(pose, self.geom)
                 moves = {f: servo_motion.plan_move(self._ref.movement_id, f, reach[i],
                                                    self._reach_start[i], self._reach_end[i])
                          for i, f in enumerate(FINGERS) if states[i] == "assisting"}

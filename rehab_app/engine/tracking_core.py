@@ -116,6 +116,15 @@ def landmarks_to_pixels(hand_landmarks, width: int, height: int) -> np.ndarray:
                     dtype=float)
 
 
+def tip_reach(pose: np.ndarray, geom: Geometry) -> np.ndarray:
+    """Wrist -> fingertip distance per finger, for (K, 3) or (P, K, 3) poses -> (5,) or (P, 5).
+
+    In the image plane only. The original script used the 3-D distance, but MediaPipe's
+    depth is so noisy on a curled hand that a closed fist could measure a longer reach than
+    an open hand - fingers then counted as "at the end position" before they had moved."""
+    return np.linalg.norm(pose[..., list(geom.tip_rows), :2], axis=-1)
+
+
 def resample_to_progress(times, poses, duration: float, n: int = N_PROGRESS) -> np.ndarray:
     """Re-index a take from wall-clock time to progress 0-100 % -> (n, K, 3)."""
     times, poses = np.asarray(times, dtype=float), np.asarray(poses, dtype=float)
@@ -152,7 +161,7 @@ def build_reference(takes: list[np.ndarray], geom: Geometry):
     sigma = np.sqrt((dev ** 2).mean(axis=0))                    # (P, K)
     finger_sigma = np.stack([sigma[:, list(rows)].mean(axis=1) for rows in geom.finger_rows], axis=1)
     tolerance = np.maximum(TOL_FLOOR, TOL_SIGMAS * finger_sigma)
-    reach = np.linalg.norm(mean[:, list(geom.tip_rows), :], axis=-1)
+    reach = tip_reach(mean, geom)
     rom = reach.max(axis=0) - reach.min(axis=0)
     return mean, tolerance, rom
 
@@ -313,9 +322,8 @@ class StallAssist:
         if self._t_start is None:
             self._t_start = now
         in_grace = (now - self._t_start) < self.start_grace_s
-        tips = list(self.geom.tip_rows)
-        reach_cur = np.linalg.norm(cur_pose[tips], axis=1)
-        reach_tgt = np.linalg.norm(target_pose[tips], axis=1)
+        reach_cur = tip_reach(cur_pose, self.geom)
+        reach_tgt = tip_reach(target_pose, self.geom)
         cmds, states = [], []
         for i in range(len(FINGERS)):
             hist = self._history[i]

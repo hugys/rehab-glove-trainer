@@ -4,7 +4,8 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QMessageBox,
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
+                               QMessageBox,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ...config import FINGERS, MOVEMENTS_BY_ID, session_duration_s
@@ -48,14 +49,18 @@ class ResultsPage(Page):
         self.summary = muted("")
         self.kick_info = muted("")
         self.kick_info.setWordWrap(True)
+        # legend under the graph: on the graph it always ended up covering some curve
+        self.curve_legend = QLabel("&nbsp;&nbsp;&nbsp;".join(
+            [f"<span style='color:{theme.FINGER_COLORS[f]}'>▬</span> {f.capitalize()}"
+             for f in FINGERS]
+            + ["▲ glove kicks in", "<b>▬</b> moved by the glove", "- - threshold"]))
+        self.curve_legend.setStyleSheet("font-size: 17px;")
+        self.curve_legend.setWordWrap(True)
 
         pg.setConfigOptions(antialias=True, background="w", foreground=theme.TEXT)
         self.curve_plot = pg.PlotWidget()
         self.curve_plot.setLabel("bottom", "Movement time (% of the planned duration)")
         self.curve_plot.setLabel("left", "Error (% of hand size)")
-        # bottom left: the error starts at 100 % and falls, so that corner stays empty
-        self.curve_plot.addLegend(offset=(20, -20), labelTextSize=LEGEND_SIZE,
-                                  brush=pg.mkBrush(255, 255, 255, 230))
         self.curve_plot.showGrid(y=True, alpha=0.2)
 
         self.trend_plot = pg.PlotWidget()
@@ -88,10 +93,9 @@ class ResultsPage(Page):
         sel.addWidget(button("← Back to patient", slot=lambda: self.navigate("home")))
 
         plots = QHBoxLayout()
-        plots.addWidget(card(self.curve_plot, muted(
-            "Part of the movement still missing, mean across repetitions. Thin line = the "
-            "patient, bold = moved by the glove, ▲ = the glove's actuator kicks in. Dashed "
-            "line = threshold."), self.kick_info,
+        plots.addWidget(card(self.curve_plot, self.curve_legend, muted(
+            "Part of the movement still missing, mean across repetitions. Past “time up” the "
+            "glove finishes the movement."), self.kick_info,
                              title="Error through the movement", info="error"), 1)
         plots.addWidget(card(self.trend_plot, muted("Mean error per session of this movement "
                                                     "(lower = closer to the reference)."),
@@ -192,12 +196,6 @@ class ResultsPage(Page):
             self.curve_plot.addLine(x=100, pen=pg.mkPen(theme.MUTED, width=1, style=Qt.DotLine),
                                     label="time up", labelOpts={"position": 0.95,
                                                                 "color": theme.MUTED})
-        # legend entries for the glove's part
-        self.curve_plot.plot([], [], pen=None, symbol="t1", symbolSize=14,
-                             symbolBrush=theme.MUTED, symbolPen=pg.mkPen(theme.TEXT, width=1.5),
-                             name="Glove kicks in")
-        self.curve_plot.plot([], [], pen=pg.mkPen(theme.MUTED, width=7),
-                             name="Moved by the glove")
         self.curve_plot.setXRange(0, x_max, padding=0.02)
         self.kick_info.setText("▲ Glove kicked in: " + ("; ".join(kicks) if kicks else
                                                          "never in this session"))

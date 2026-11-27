@@ -23,13 +23,13 @@ from .base import Page, button, card, heading, muted
 
 
 def fingertip_reach(ref, landmark_set, hand_size_mm: float | None) -> dict[str, np.ndarray]:
-    """Distance from wrist to each finger's most distal tracked point, per progress step:
+    """Distance in the picture from wrist to each finger's most distal tracked point, per step:
     mm if the hand size is known, otherwise % of hand size."""
     scale = (hand_size_mm if hand_size_mm else 100.0) if ref.units == "hand" else 1.0
     out = {}
     for f, rows in landmark_set.finger_groups().items():
         if rows:
-            out[f] = np.linalg.norm(ref.data[:, rows[-1], :], axis=1) * scale
+            out[f] = np.linalg.norm(ref.data[:, rows[-1], :2], axis=1) * scale   # as seen
     return out
 
 

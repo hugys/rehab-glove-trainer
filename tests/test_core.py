@@ -536,3 +536,20 @@ def test_handheld_size_follows_the_distance_but_stand_does_not():
     _, near = _session_reach("stand", 40, 1.3)
     _, same = _session_reach("stand", 40, 1.0)
     assert span(near) == pytest.approx(1.3 * span(same), rel=0.03)
+
+
+def test_closed_fist_with_noisy_depth_is_not_at_the_end_position():
+    """A fist's depth estimate can be huge. It must not make the fingertips look further
+    from the wrist than an open hand (which marked every finger done before it moved)."""
+    geom = tc.Geometry.from_landmark_set(LandmarkSet.from_preset("12"))
+    fist = np.zeros((12, 3))
+    fist[geom.tip_rows, 1] = -0.5
+    fist[geom.tip_rows, 2] = 2.0                       # depth noise
+    open_hand = np.zeros((12, 3))
+    open_hand[geom.tip_rows, 1] = -1.5
+    assert np.all(tc.tip_reach(fist, geom) < tc.tip_reach(open_hand, geom))
+    sa = tc.StallAssist(geom, window_s=1.0)
+    _, states = sa.update(fist, open_hand, 0.0)
+    assert "done" not in states
+    cmds, states = sa.update(fist, open_hand, 0.1, force=True)
+    assert states == ["assisting"] * 5 and cmds == [tc.CCW] * 5     # extend
